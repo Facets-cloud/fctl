@@ -14,7 +14,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.24'
           
       - name: Build Binaries
         run: |
@@ -32,4 +32,4 @@ jobs:
             fctl-darwin-arm64
             fctl-windows-amd64.exe
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+          GITHUB_TOKEN: ${{ secrets.TOKEN }} 
