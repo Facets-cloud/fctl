@@ -19,11 +19,11 @@ Download the latest binary for your platform from the [GitHub Releases](https://
 1. Clone the repository:
    ```bash
    git clone https://github.com/Facets-cloud/fctl.git
-cd fctl
    ```
 
 2. Build the binary:
    ```bash
+   cd fctl
    make build
    ```
 
