@@ -155,9 +155,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize terraform with backend configuration if provided
-	initOptions := []tfexec.InitOption{
-		tfexec.Upgrade(true),
-	}
+	initOptions := []tfexec.InitOption{}
 
 	if backendConfig != nil {
 		fmt.Printf("🔄 Configuring %s backend...\n", backendConfig.Type)
