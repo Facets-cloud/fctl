@@ -7,18 +7,18 @@ A tool for exporting Terraform configurations from Facets.
 ### Using Go
 
 ```bash
-go install github.com/yourusername/fctl@latest
+go install github.com/Facets-cloud/fctl@latest
 ```
 
 ### Using GitHub Releases
 
-Download the latest binary for your platform from the [GitHub Releases](https://github.com/yourusername/fctl/releases) page.
+Download the latest binary for your platform from the [GitHub Releases](https://github.com/Facets-cloud/fctl/releases) page.
 
 ## Development Setup
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/fctl.git
+   git clone https://github.com/Facets-cloud/fctl.git
 cd fctl
    ```
 
