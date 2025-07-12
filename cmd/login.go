@@ -57,6 +57,11 @@ var loginCmd = &cobra.Command{
 				return
 			}
 		}
+		// Ensure host has protocol
+		if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
+			fmt.Printf("ℹ️  No protocol specified for host. Using https://%s\n", host)
+			host = "https://" + host
+		}
 		// Prompt for missing username
 		if username == "" {
 			fmt.Print("Enter Facets username: ")
