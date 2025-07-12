@@ -4,8 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -13,17 +12,20 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Facets-cloud/facets-sdk-go/facets/client/ui_deployment_controller"
 	"github.com/Facets-cloud/fctl/pkg/config"
 	"github.com/hashicorp/terraform-exec/tfexec"
+	tfjson "github.com/hashicorp/terraform-json"
 	"github.com/spf13/cobra"
 )
 
 var (
-	zipPath            string
-	targetAddr         string
-	statePath          string
-	backendType        string
-	selectedDeployment string
+	zipPath               string
+	targetAddr            string
+	statePath             string
+	backendType           string
+	selectedDeployment    string
+	uploadReleaseMetadata bool
 )
 
 var applyCmd = &cobra.Command{
@@ -42,6 +44,7 @@ func init() {
 	applyCmd.Flags().StringVarP(&targetAddr, "target", "t", "", "Module target address for selective releases")
 	applyCmd.Flags().StringVarP(&statePath, "state", "s", "", "Path to the state file")
 	applyCmd.Flags().StringVar(&backendType, "backend-type", "", "Type of backend (e.g., s3, gcs)")
+	applyCmd.Flags().BoolVar(&uploadReleaseMetadata, "upload-release-metadata", false, "Upload release metadata to control plane after apply")
 
 	applyCmd.MarkFlagRequired("zip")
 }
@@ -63,18 +66,13 @@ func runApply(cmd *cobra.Command, args []string) error {
 		fmt.Printf("🔐 Using %s backend for state management\n", backendConfig.Type)
 	}
 
-	// Extract environment ID from zip filename
-	envID, err := extractEnvID(zipPath)
+	// Extract environment ID and deployment ID from zip filename
+	envID, deploymentID, err := extractEnvIDAndDeploymentID(zipPath)
 	if err != nil {
-		return fmt.Errorf("❌ Failed to extract environment ID: %v", err)
+		return fmt.Errorf("❌ Failed to extract environment or deployment ID: %v", err)
 	}
 	fmt.Printf("🌍 Environment ID: %s\n", envID)
-
-	// Calculate hash of zip file
-	hash, err := calculateZipHash(zipPath)
-	if err != nil {
-		return fmt.Errorf("❌ Failed to calculate zip hash: %v", err)
-	}
+	fmt.Printf("🆔 Deployment ID: %s\n", deploymentID)
 
 	// Create base directory structure
 	homeDir, err := os.UserHomeDir()
@@ -84,21 +82,21 @@ func runApply(cmd *cobra.Command, args []string) error {
 
 	baseDir := filepath.Join(homeDir, ".facets")
 	envDir := filepath.Join(baseDir, envID)
-	deployDir := filepath.Join(envDir, hash)
+	deployDir := filepath.Join(envDir, deploymentID)
 	tfWorkDir := filepath.Join(deployDir, "tfexport")
 
 	// Create directories
-	fmt.Printf("📁 Creating deployment directory for environment %s...\n", envID)
+	fmt.Printf("📁 Creating deployment directory for environment %s and deployment %s...\n", envID, deploymentID)
 	if err := os.MkdirAll(deployDir, 0755); err != nil {
 		return fmt.Errorf("❌ Failed to create directories: %v", err)
 	}
 
 	// Check for existing deployments only if:
-	// 1. This hash directory doesn't exist
+	// 1. This deploymentID directory doesn't exist
 	// 2. No backend is configured (we need local state management)
 	if _, err := os.Stat(tfWorkDir); os.IsNotExist(err) {
 		if backendConfig == nil {
-			existingDeployments, err := listExistingDeployments(envDir, hash)
+			existingDeployments, err := listExistingDeployments(envDir, deploymentID)
 			if err != nil {
 				return fmt.Errorf("❌ Failed to list existing deployments: %v", err)
 			}
@@ -110,7 +108,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 				}
 				if proceed {
 					fmt.Println("🔄 User chose to proceed with state file from existing deployment")
-					if err := copyStateFromPreviousDeployment(envDir, hash, envID); err != nil {
+					if err := copyStateFromPreviousDeployment(envDir, deploymentID, envID); err != nil {
 						return fmt.Errorf("❌ Failed to copy state file: %v", err)
 					}
 				}
@@ -189,6 +187,48 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Terraform apply failed: %v", err)
 	}
 
+	// Generate release metadata
+	fmt.Println("📊 Generating release metadata...")
+	if err := generateReleaseMetadata(tf, deployDir); err != nil {
+		fmt.Printf("⚠️ Warning: Failed to generate release metadata: %v\n", err)
+	}
+
+	// Upload release metadata if flag is set
+	if uploadReleaseMetadata {
+		fmt.Println("☁️ Uploading release metadata to control plane...")
+		profile, _ := cmd.Flags().GetString("profile")
+		client, auth, err := config.GetClient(profile, false)
+		if err != nil {
+			fmt.Printf("❌ Failed to get API client: %v\n", err)
+		} else {
+			metadataFile := filepath.Join(deployDir, "release-metadata.json")
+			metadataBytes, err := os.ReadFile(metadataFile)
+			if err != nil {
+				fmt.Printf("❌ Failed to read release metadata file: %v\n", err)
+			} else {
+				var metadata interface{}
+				if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+					fmt.Printf("❌ Failed to unmarshal release metadata JSON: %v\n", err)
+				} else {
+					params := ui_deployment_controller.NewUploadReleaseMetadataParams()
+					params.ClusterID = envID
+					params.DeploymentID = deploymentID
+					if body, ok := metadata.(ui_deployment_controller.UploadReleaseMetadataBody); ok {
+						params.Body = body
+						_, err := client.UIDeploymentController.UploadReleaseMetadata(params, auth)
+						if err != nil {
+							fmt.Printf("❌ Failed to upload release metadata: %v\n", err)
+						} else {
+							fmt.Println("✅ Release metadata uploaded to control plane.")
+						}
+					} else {
+						fmt.Printf("❌ Release metadata is not of the expected type for upload.\n")
+					}
+				}
+			}
+		}
+	}
+
 	fmt.Printf("✅ Successfully applied terraform configuration!\n")
 	fmt.Printf("📍 Deployment directory: %s\n", deployDir)
 	if backendConfig == nil {
@@ -198,28 +238,13 @@ func runApply(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func extractEnvID(zipPath string) (string, error) {
-	pattern := regexp.MustCompile(`terraform-export-([^-]+)-\d{8}-\d{6}\.zip`)
+func extractEnvIDAndDeploymentID(zipPath string) (string, string, error) {
+	pattern := regexp.MustCompile(`terraform-export-([^-]+)-([^-]+)-\d{8}-\d{6}\.zip`)
 	matches := pattern.FindStringSubmatch(filepath.Base(zipPath))
-	if len(matches) < 2 {
-		return "", fmt.Errorf("invalid zip filename format")
+	if len(matches) < 3 {
+		return "", "", fmt.Errorf("invalid zip filename format")
 	}
-	return matches[1], nil
-}
-
-func calculateZipHash(zipPath string) (string, error) {
-	file, err := os.Open(zipPath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return matches[1], matches[2], nil
 }
 
 func extractZip(zipPath, destPath string) error {
@@ -262,7 +287,7 @@ func extractZip(zipPath, destPath string) error {
 	return nil
 }
 
-func listExistingDeployments(envDir, currentHash string) ([]string, error) {
+func listExistingDeployments(envDir, currentDeploymentID string) ([]string, error) {
 	entries, err := os.ReadDir(envDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -273,7 +298,7 @@ func listExistingDeployments(envDir, currentHash string) ([]string, error) {
 
 	var deployments []string
 	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() != currentHash {
+		if entry.IsDir() && entry.Name() != currentDeploymentID {
 			deployments = append(deployments, entry.Name())
 		}
 	}
@@ -282,8 +307,8 @@ func listExistingDeployments(envDir, currentHash string) ([]string, error) {
 
 func promptUser(existingDeployments []string) (bool, error) {
 	fmt.Println("\n⚠️  Found existing deployments in this environment:")
-	for i, hash := range existingDeployments {
-		fmt.Printf("%d. %s\n", i+1, hash)
+	for i, deploymentID := range existingDeployments {
+		fmt.Printf("%d. %s\n", i+1, deploymentID)
 	}
 	fmt.Print("\n❓ Do you want to proceed with state file? (y/n): ")
 
@@ -338,7 +363,7 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-func copyStateFromPreviousDeployment(envDir, currentHash, envID string) error {
+func copyStateFromPreviousDeployment(envDir, currentDeploymentID, envID string) error {
 	if selectedDeployment == "" {
 		return fmt.Errorf("no deployment selected")
 	}
@@ -355,7 +380,7 @@ func copyStateFromPreviousDeployment(envDir, currentHash, envID string) error {
 	fmt.Printf("📝 Found state file in deployment %s\n", selectedDeployment)
 
 	// Create state directory in current deployment
-	newStateDir := filepath.Join(envDir, currentHash, "tfexport", "terraform.tfstate.d", envID)
+	newStateDir := filepath.Join(envDir, currentDeploymentID, "tfexport", "terraform.tfstate.d", envID)
 	if err := os.MkdirAll(newStateDir, 0755); err != nil {
 		return fmt.Errorf("failed to create state directory: %v", err)
 	}
@@ -367,5 +392,62 @@ func copyStateFromPreviousDeployment(envDir, currentHash, envID string) error {
 	}
 
 	fmt.Printf("✅ Successfully copied state file from deployment %s\n", selectedDeployment)
+	return nil
+}
+
+func parseStateFile(state *tfjson.State) []map[string]interface{} {
+	var releaseMetadataList []map[string]interface{}
+
+	if state == nil || state.Values == nil {
+		return releaseMetadataList
+	}
+
+	for _, resource := range state.Values.RootModule.Resources {
+		if resource.Type == "scratch_string" && resource.Name == "release_metadata" {
+			if attrs, ok := resource.AttributeValues["in"].(string); ok {
+				var inData map[string]interface{}
+				if err := json.Unmarshal([]byte(attrs), &inData); err != nil {
+					fmt.Printf("⚠️ Warning: Failed to parse release metadata JSON: %v\n", err)
+					continue
+				}
+
+				if releaseMetadata, ok := inData["release_metadata"].(map[string]interface{}); ok {
+					if generateMetadata, ok := inData["generate_release_metadata"].(bool); ok && generateMetadata {
+						releaseMetadataList = append(releaseMetadataList, releaseMetadata)
+					}
+				}
+			}
+		}
+	}
+
+	return releaseMetadataList
+}
+
+func generateReleaseMetadata(tf *tfexec.Terraform, deployDir string) error {
+	// Run terraform show -json
+	state, err := tf.Show(context.Background())
+	if err != nil {
+		return fmt.Errorf("terraform show failed: %w", err)
+	}
+
+	// Parse the state file and get release metadata
+	releaseMetadataList := parseStateFile(state)
+	if len(releaseMetadataList) == 0 {
+		fmt.Println("ℹ️ No release metadata found in state")
+		return nil
+	}
+
+	// Create metadata file
+	metadataFile := filepath.Join(deployDir, "release-metadata.json")
+	metadataJSON, err := json.MarshalIndent(releaseMetadataList, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal release metadata: %w", err)
+	}
+
+	if err := os.WriteFile(metadataFile, metadataJSON, 0644); err != nil {
+		return fmt.Errorf("failed to write release metadata file: %w", err)
+	}
+
+	fmt.Printf("📝 Release metadata saved to: %s\n", metadataFile)
 	return nil
 }

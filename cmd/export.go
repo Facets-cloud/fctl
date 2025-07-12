@@ -209,10 +209,11 @@ var exportCmd = &cobra.Command{
 		}
 		s.UpdateMessage("📥 Preparing to download Terraform export...")
 
+		deploymentID := response.Payload.ID
 		downloadURL := fmt.Sprintf("%s/cc-ui/v1/clusters/%s/deployments/%s/download-terraform-export",
 			clientConfig.ControlPlaneURL,
 			environment,
-			response.Payload.ID)
+			deploymentID)
 
 		req, err := http.NewRequest("GET", downloadURL, nil)
 		if err != nil {
@@ -236,7 +237,7 @@ var exportCmd = &cobra.Command{
 			return
 		}
 
-		filename := fmt.Sprintf("terraform-export-%s-%s.zip", environment, time.Now().Format("20060102-150405"))
+		filename := fmt.Sprintf("terraform-export-%s-%s-%s.zip", environment, deploymentID, time.Now().Format("20060102-150405"))
 		currentDir, err := os.Getwd()
 		if err != nil {
 			s.Fail("❌ Could not get current directory: " + err.Error())
