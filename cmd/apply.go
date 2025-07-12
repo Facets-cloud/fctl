@@ -42,7 +42,7 @@ func init() {
 	applyCmd.Flags().StringVarP(&zipPath, "zip", "z", "", "Path to the exported zip file (required)")
 	applyCmd.Flags().StringVarP(&targetAddr, "target", "t", "", "Module target address for selective releases")
 	applyCmd.Flags().StringVarP(&statePath, "state", "s", "", "Path to the state file")
-	applyCmd.Flags().StringVar(&backendType, "backend-type", "", "Type of backend (e.g., s3, gcs)")
+	applyCmd.Flags().StringVar(&backendType, "backend-type", "b", "Type of backend (e.g., s3, gcs)")
 	applyCmd.Flags().BoolVar(&uploadReleaseMetadata, "upload-release-metadata", false, "Upload release metadata to control plane after apply")
 
 	applyCmd.MarkFlagRequired("zip")

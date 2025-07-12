@@ -25,7 +25,7 @@ func init() {
 	planCmd.Flags().StringVarP(&zipPath, "zip", "z", "", "Path to the exported zip file (required)")
 	planCmd.Flags().StringVarP(&targetAddr, "target", "t", "", "Module target address for selective releases")
 	planCmd.Flags().StringVarP(&statePath, "state", "s", "", "Path to the state file")
-	planCmd.Flags().StringVar(&backendType, "backend-type", "", "Type of backend (e.g., s3, gcs)")
+	planCmd.Flags().StringVar(&backendType, "backend-type", "b", "Type of backend (e.g., s3, gcs)")
 
 	planCmd.MarkFlagRequired("zip")
 }

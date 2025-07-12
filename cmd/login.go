@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Facets-cloud/facets-sdk-go/facets/client/ui_user_controller"
@@ -91,6 +92,13 @@ func updateProfileCredentials(profile, host, username, token string) {
 		return
 	}
 	credsPath := home + "/.facets/credentials"
+
+	// Ensure the parent directory exists
+	if err := os.MkdirAll(filepath.Dir(credsPath), 0700); err != nil {
+		fmt.Printf("❌ Failed to create credentials directory: %v\n", err)
+		return
+	}
+
 	creds, err := ini.Load(credsPath)
 	if err != nil {
 		creds = ini.Empty()
