@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Facets-cloud/facets-sdk-go/facets/client/ui_user_controller"
@@ -24,6 +26,58 @@ var loginCmd = &cobra.Command{
 		username, _ := cmd.Flags().GetString("username")
 		token, _ := cmd.Flags().GetString("token")
 
+		reader := bufio.NewReader(os.Stdin)
+
+		// Profile logic: use 'default' if not provided, but prompt if 'default' exists
+		if profile == "" {
+			profile = "default"
+			home, err := os.UserHomeDir()
+			credsPath := home + "/.facets/credentials"
+			creds, err := ini.Load(credsPath)
+			if err == nil {
+				if creds.Section("default").HasKey("username") {
+					fmt.Print("Profile 'default' already exists. Please enter a new profile name: ")
+					input, _ := reader.ReadString('\n')
+					profile = strings.TrimSpace(input)
+					if profile == "" {
+						fmt.Println("❌ Profile name cannot be empty.")
+						return
+					}
+				}
+			}
+		}
+
+		// Prompt for missing host
+		if host == "" {
+			fmt.Print("Enter Facets API host (control_plane_url): ")
+			input, _ := reader.ReadString('\n')
+			host = strings.TrimSpace(input)
+			if host == "" {
+				fmt.Println("❌ Host cannot be empty.")
+				return
+			}
+		}
+		// Prompt for missing username
+		if username == "" {
+			fmt.Print("Enter Facets username: ")
+			input, _ := reader.ReadString('\n')
+			username = strings.TrimSpace(input)
+			if username == "" {
+				fmt.Println("❌ Username cannot be empty.")
+				return
+			}
+		}
+		// Prompt for missing token
+		if token == "" {
+			fmt.Print("Enter Facets API token: ")
+			input, _ := reader.ReadString('\n')
+			token = strings.TrimSpace(input)
+			if token == "" {
+				fmt.Println("❌ Token cannot be empty.")
+				return
+			}
+		}
+
 		s := pin.New("🔐 Initializing login...",
 			pin.WithSpinnerColor(pin.ColorCyan),
 			pin.WithTextColor(pin.ColorYellow),
@@ -37,18 +91,9 @@ var loginCmd = &cobra.Command{
 		cancel := s.Start(context.Background())
 		defer cancel()
 
-		// If flags for credentials are provided, use them to update the profile
-		if host != "" && username != "" && token != "" {
-			if profile == "" {
-				s.Fail("❌ Please specify a --profile <n> to save these credentials.")
-				return
-			}
-			s.UpdateMessage("💾 Updating credentials for profile: " + profile)
-			updateProfileCredentials(profile, host, username, token)
-			s.UpdateMessage("✨ Credentials updated, verifying connection...")
-		} else {
-			s.UpdateMessage("🔑 Verifying existing credentials...")
-		}
+		s.UpdateMessage("💾 Updating credentials for profile: " + profile)
+		updateProfileCredentials(profile, host, username, token)
+		s.UpdateMessage("✨ Credentials updated, verifying connection...")
 
 		// Get client, skipping the expiry check for the login command itself
 		client, auth, err := config.GetClient(profile, true)
@@ -110,6 +155,21 @@ func updateProfileCredentials(profile, host, username, token string) {
 
 	if err := creds.SaveTo(credsPath); err != nil {
 		fmt.Printf("❌ Failed to save credentials: %v\n", err)
+	}
+
+	// Ensure the config file exists and set the default profile
+	configPath := home + "/.facets/config"
+	configIni := ini.Empty()
+	if _, err := os.Stat(configPath); err == nil {
+		// File exists, try to load it
+		loadedIni, err := ini.Load(configPath)
+		if err == nil {
+			configIni = loadedIni
+		}
+	}
+	configIni.Section("default").Key("profile").SetValue(profile)
+	if err := configIni.SaveTo(configPath); err != nil {
+		fmt.Printf("❌ Failed to save config file: %v\n", err)
 	}
 }
 
