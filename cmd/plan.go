@@ -13,10 +13,9 @@ import (
 
 var planCmd = &cobra.Command{
 	Use:   "plan",
-	Short: "Plan terraform configuration from an exported zip file",
-	Long: `Plan terraform configuration from an exported zip file. This command mimics terraform plan
-and supports state file management and selective module targeting.`,
-	RunE: runPlan,
+	Short: "Preview changes for a Terraform export in your Facets environment.",
+	Long:  `Generate and review an execution plan for a Terraform export in your Facets environment. This command mimics 'terraform plan', allowing you to see what changes will be made before applying them. Supports state file management and selective module targeting.`,
+	RunE:  runPlan,
 }
 
 func init() {
@@ -109,7 +108,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize terraform
-	fmt.Println("🔧 Initializing terraform...")
+	fmt.Println("�� Initializing terraform...")
 	tf, err := tfexec.NewTerraform(tfWorkDir, "terraform")
 	if err != nil {
 		return fmt.Errorf("❌ Failed to create terraform executor: %v", err)

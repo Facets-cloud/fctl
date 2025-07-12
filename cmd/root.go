@@ -8,11 +8,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var asciiArt = `
+
+███████╗ ██████╗████████╗██╗     
+██╔════╝██╔════╝╚══██╔══╝██║     
+█████╗  ██║        ██║   ██║     
+██╔══╝  ██║        ██║   ██║     
+██║     ╚██████╗   ██║   ███████╗
+╚═╝      ╚═════╝   ╚═╝   ╚══════╝
+                                 
+`
+
 var rootCmd = &cobra.Command{
 	Use:   "fctl",
-	Short: "A CLI for interacting with the Facets API",
-	Long:  `fctl is a command-line tool to manage your Facets projects and environments.`,
+	Short: "Facets Control CLI: Manage cloud infrastructure, environments, and deployments.",
+	Long: `Facets Control CLI (fctl) is a powerful tool to manage your Facets projects, environments, deployments, and cloud resources from the command line.
+
+Key Features:
+- Authenticate and manage user profiles
+- Export and apply Terraform configurations
+- Plan and preview infrastructure changes
+- View version and build metadata
+- And more!`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Print ASCII art banner for every command
+		fmt.Println(asciiArt)
 		if cmd.Use == "login" {
 			return nil
 		}
@@ -26,8 +46,8 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
+	rootCmd.SuggestionsMinimumDistance = 1
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
 		os.Exit(1)
 	}
 }

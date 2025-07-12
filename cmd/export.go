@@ -115,7 +115,8 @@ func getHistoricalDeploymentTime(client *client.Facets, auth runtime.ClientAuthI
 
 var exportCmd = &cobra.Command{
 	Use:   "export",
-	Short: "Export a project environment",
+	Short: "Export a Facets environment as a Terraform configuration.",
+	Long:  `Export your Facets project environment as a Terraform configuration zip file. This enables you to manage infrastructure as code, perform offline planning, and apply changes in a controlled manner.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		environment, _ := cmd.Flags().GetString("environment")
 

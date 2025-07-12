@@ -15,7 +15,8 @@ import (
 
 var loginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Authenticate with the Facets API and refresh token expiry",
+	Short: "Authenticate and configure your Facets CLI profile.",
+	Long:  `Authenticate with the Facets API and refresh your access token. This command allows you to securely store credentials, manage multiple profiles, and ensure your CLI is ready to interact with Facets services.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		profile, _ := cmd.Flags().GetString("profile")
 		host, _ := cmd.Flags().GetString("host")

@@ -30,10 +30,9 @@ var (
 
 var applyCmd = &cobra.Command{
 	Use:   "apply",
-	Short: "Apply terraform configuration from an exported zip file",
-	Long: `Apply terraform configuration from an exported zip file. This command mimics terraform apply
-and supports state file management and selective module targeting.`,
-	RunE: runApply,
+	Short: "Apply a Terraform export to your Facets environment.",
+	Long:  `Apply a Terraform configuration exported from Facets to your target environment. This command mimics 'terraform apply', supports state file management, selective module targeting, and can upload release metadata to the control plane for audit and tracking.`,
+	RunE:  runApply,
 }
 
 func init() {

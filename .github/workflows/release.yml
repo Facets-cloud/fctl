@@ -15,13 +15,20 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          
+      
+      - name: Set version variables
+        id: vars
+        run: |
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          echo "COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          echo "DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
+      
       - name: Build Binaries
         run: |
-          GOOS=linux GOARCH=amd64 go build -o fctl-linux-amd64
-          GOOS=darwin GOARCH=amd64 go build -o fctl-darwin-amd64
-          GOOS=darwin GOARCH=arm64 go build -o fctl-darwin-arm64
-          GOOS=windows GOARCH=amd64 go build -o fctl-windows-amd64.exe
+          GOOS=linux GOARCH=amd64 go build -ldflags "-X 'github.com/Facets-cloud/fctl/cmd.Version=${VERSION}' -X 'github.com/Facets-cloud/fctl/cmd.Commit=${COMMIT}' -X 'github.com/Facets-cloud/fctl/cmd.BuildDate=${DATE}'" -o fctl-linux-amd64
+          GOOS=darwin GOARCH=amd64 go build -ldflags "-X 'github.com/Facets-cloud/fctl/cmd.Version=${VERSION}' -X 'github.com/Facets-cloud/fctl/cmd.Commit=${COMMIT}' -X 'github.com/Facets-cloud/fctl/cmd.BuildDate=${DATE}'" -o fctl-darwin-amd64
+          GOOS=darwin GOARCH=arm64 go build -ldflags "-X 'github.com/Facets-cloud/fctl/cmd.Version=${VERSION}' -X 'github.com/Facets-cloud/fctl/cmd.Commit=${COMMIT}' -X 'github.com/Facets-cloud/fctl/cmd.BuildDate=${DATE}'" -o fctl-darwin-arm64
+          GOOS=windows GOARCH=amd64 go build -ldflags "-X 'github.com/Facets-cloud/fctl/cmd.Version=${VERSION}' -X 'github.com/Facets-cloud/fctl/cmd.Commit=${COMMIT}' -X 'github.com/Facets-cloud/fctl/cmd.BuildDate=${DATE}'" -o fctl-windows-amd64.exe
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
