@@ -31,7 +31,7 @@ var loginCmd = &cobra.Command{
 		// Profile logic: use 'default' if not provided, but prompt if 'default' exists
 		if profile == "" {
 			profile = "default"
-			home, err := os.UserHomeDir()
+			home, _ := os.UserHomeDir()
 			credsPath := home + "/.facets/credentials"
 			creds, err := ini.Load(credsPath)
 			if err == nil {

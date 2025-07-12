@@ -401,30 +401,45 @@ func parseStateFile(state *tfjson.State) []map[string]interface{} {
 		return releaseMetadataList
 	}
 
-	for _, resource := range state.Values.RootModule.Resources {
-		if resource.Type == "scratch_string" && resource.Name == "release_metadata" {
-			if attrs, ok := resource.AttributeValues["in"].(string); ok {
-				var inData map[string]interface{}
-				if err := json.Unmarshal([]byte(attrs), &inData); err != nil {
-					fmt.Printf("⚠️ Warning: Failed to parse release metadata JSON: %v\n", err)
-					continue
-				}
-
-				if releaseMetadata, ok := inData["release_metadata"].(map[string]interface{}); ok {
-					if generateMetadata, ok := inData["generate_release_metadata"].(bool); ok && generateMetadata {
-						releaseMetadataList = append(releaseMetadataList, releaseMetadata)
+	// Helper function to recursively walk modules
+	var walkModule func(module *tfjson.StateModule)
+	walkModule = func(module *tfjson.StateModule) {
+		if module == nil {
+			return
+		}
+		for _, resource := range module.Resources {
+			if resource.Type == "scratch_string" && resource.Name == "release_metadata" {
+				if attrs, ok := resource.AttributeValues["in"].(string); ok {
+					var inData map[string]interface{}
+					if err := json.Unmarshal([]byte(attrs), &inData); err != nil {
+						fmt.Printf("⚠️ Warning: Failed to parse release metadata JSON: %v\n", err)
+						continue
+					}
+					if releaseMetadata, ok := inData["release_metadata"].(map[string]interface{}); ok {
+						if generateMetadata, ok := inData["generate_release_metadata"].(bool); ok && generateMetadata {
+							releaseMetadataList = append(releaseMetadataList, releaseMetadata)
+						}
 					}
 				}
 			}
 		}
+		for _, child := range module.ChildModules {
+			walkModule(child)
+		}
 	}
 
+	walkModule(state.Values.RootModule)
 	return releaseMetadataList
 }
 
 func generateReleaseMetadata(tf *tfexec.Terraform, deployDir string) error {
-	// Run terraform show -json
+	// Prevent tf.Show from printing state to terminal
+	tf.SetStdout(io.Discard)
+	tf.SetStderr(io.Discard)
 	state, err := tf.Show(context.Background())
+	// Restore output for future commands
+	tf.SetStdout(os.Stdout)
+	tf.SetStderr(os.Stdout)
 	if err != nil {
 		return fmt.Errorf("terraform show failed: %w", err)
 	}

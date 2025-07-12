@@ -106,9 +106,9 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Println("♻️ Using existing deployment directory")
 	}
-
+	
 	// Initialize terraform
-	fmt.Println("🔧 Initializing terraform...")
+	fmt.Println("�� Initializing terraform...")
 	tf, err := tfexec.NewTerraform(tfWorkDir, "terraform")
 	if err != nil {
 		return fmt.Errorf("❌ Failed to create terraform executor: %v", err)
