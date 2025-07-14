@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
 	"os"
 	"path/filepath"
 
@@ -11,28 +15,29 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var planCmd = &cobra.Command{
-	Use:   "plan",
-	Short: "Preview changes for a Terraform export in your Facets environment.",
-	Long:  `Generate and review an execution plan for a Terraform export in your Facets environment. This command mimics 'terraform plan', allowing you to see what changes will be made before applying them. Supports state file management and selective module targeting.`,
-	RunE:  runPlan,
+var destroyCmd = &cobra.Command{
+	Use:   "destroy",
+	Short: "Destroy resources for a Terraform export in your Facets environment.",
+	Long:  `Destroy all resources managed by a Terraform export in your Facets environment. This command mimics 'terraform destroy', supporting state file management and selective module targeting.`,
+	RunE:  runDestroy,
 }
 
 func init() {
-	rootCmd.AddCommand(planCmd)
+	rootCmd.AddCommand(destroyCmd)
 
-	// Add flags - reusing the same flags as apply command
-	planCmd.Flags().StringVarP(&zipPath, "zip", "z", "", "Path to the exported zip file (required)")
-	planCmd.Flags().StringVarP(&targetAddr, "target", "t", "", "Module target address for selective releases")
-	planCmd.Flags().StringVarP(&statePath, "state", "s", "", "Path to the state file")
-	planCmd.Flags().StringVar(&backendType, "backend-type", "", "Type of backend (e.g., s3, gcs)")
+	// Add flags - reusing the same flags as plan/apply
+	destroyCmd.Flags().StringVarP(&zipPath, "zip", "z", "", "Path to the exported zip file (required)")
+	destroyCmd.Flags().StringVarP(&targetAddr, "target", "t", "", "Module target address for selective releases")
+	destroyCmd.Flags().StringVarP(&statePath, "state", "s", "", "Path to the state file")
+	destroyCmd.Flags().StringVar(&backendType, "backend-type", "", "Type of backend (e.g., s3, gcs)")
+	destroyCmd.Flags().BoolVar(&uploadReleaseMetadata, "upload-release-metadata", false, "Upload release metadata to control plane after apply")
 
-	planCmd.MarkFlagRequired("zip")
+	destroyCmd.MarkFlagRequired("zip")
 }
 
-func runPlan(cmd *cobra.Command, args []string) error {
+func runDestroy(cmd *cobra.Command, args []string) error {
 	allowDestroy, _ := cmd.Flags().GetBool("allow-destroy")
-	fmt.Println("🔍 Starting terraform plan process...")
+	fmt.Println("🔥 Starting terraform destroy process...")
 
 	// Initialize backend configuration
 	backendConfig, err := config.NewBackendConfig(backendType)
@@ -115,7 +120,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize terraform
-	fmt.Println("�� Initializing terraform...")
+	fmt.Println("🔧 Initializing terraform...")
 	tf, err := tfexec.NewTerraform(tfWorkDir, "terraform")
 	if err != nil {
 		return fmt.Errorf("❌ Failed to create terraform executor: %v", err)
@@ -163,25 +168,81 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Run terraform plan
-	planOptions := []tfexec.PlanOption{}
+	// Run terraform destroy
+	destroyOptions := []tfexec.DestroyOption{}
 	if targetAddr != "" {
 		fmt.Printf("🎯 Targeting module: %s\n", targetAddr)
-		planOptions = append(planOptions, tfexec.Target(targetAddr))
+		destroyOptions = append(destroyOptions, tfexec.Target(targetAddr))
 	}
 
-	fmt.Println("📋 Running terraform plan...")
-	planResult, err := tf.Plan(context.Background(), planOptions...)
-	if err != nil {
-		return fmt.Errorf("❌ Terraform plan failed: %v", err)
+	fmt.Println("💥 Running terraform destroy...")
+	if err := tf.Destroy(context.Background(), destroyOptions...); err != nil {
+		return fmt.Errorf("❌ Terraform destroy failed: %v", err)
 	}
 
-	if planResult {
-		fmt.Println("🔄 Changes detected in plan")
-	} else {
-		fmt.Println("✅ No changes. Infrastructure is up-to-date.")
+	// Generate release metadata
+	fmt.Println("📊 Generating release metadata...")
+	if err := generateReleaseMetadata(tf, deployDir); err != nil {
+		fmt.Printf("⚠️ Warning: Failed to generate release metadata: %v\n", err)
 	}
 
+	// Upload release metadata if flag is set
+	if uploadReleaseMetadata {
+		fmt.Println("☁️ Uploading release metadata to control plane...")
+		metadataFile := filepath.Join(deployDir, "release-metadata.json")
+		f, err := os.Open(metadataFile)
+		if err != nil {
+			fmt.Printf("❌ Failed to open release metadata file: %v\n", err)
+		} else {
+			defer f.Close()
+			var requestBody bytes.Buffer
+			writer := multipart.NewWriter(&requestBody)
+			part, err := writer.CreateFormFile("file", filepath.Base(f.Name()))
+			if err != nil {
+				fmt.Printf("❌ Failed to create multipart form file: %v\n", err)
+				return nil
+			}
+			_, err = io.Copy(part, f)
+			if err != nil {
+				fmt.Printf("❌ Failed to copy file to multipart writer: %v\n", err)
+				return nil
+			}
+			writer.Close()
+
+			// Build the upload URL (replace with actual endpoint if needed)
+			clientConfig := config.GetClientConfig("") // use the correct profile if needed
+			if clientConfig == nil {
+				fmt.Printf("❌ Could not get client configuration\n")
+				return nil
+			}
+			uploadURL := clientConfig.ControlPlaneURL + "/cc-ui/v1/clusters/" + envID + "/deployments/" + deploymentID + "/upload-release-metadata"
+
+			req, err := http.NewRequest("POST", uploadURL, &requestBody)
+			if err != nil {
+				fmt.Printf("❌ Failed to create upload request: %v\n", err)
+				return nil
+			}
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			req.SetBasicAuth(clientConfig.Username, clientConfig.Token)
+
+			httpClient := &http.Client{}
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				fmt.Printf("❌ Failed to upload release metadata: %v\n", err)
+				return nil
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				fmt.Printf("❌ Upload failed with status: %s\n%s\n", resp.Status, string(body))
+			} else {
+				fmt.Println("✅ Release metadata uploaded to control plane.")
+			}
+		}
+	}
+
+	fmt.Printf("✅ Successfully destroyed terraform-managed resources!\n")
 	fmt.Printf("📍 Deployment directory: %s\n", deployDir)
 	if backendConfig == nil {
 		fmt.Printf("💾 State file location: %s/terraform.tfstate.d/%s/terraform.tfstate\n", tfWorkDir, envID)

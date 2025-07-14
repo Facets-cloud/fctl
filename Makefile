@@ -15,6 +15,14 @@ build-versioned:
 	DATE=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
 	go build -ldflags "-X 'github.com/Facets-cloud/fctl/cmd.Version=$$VERSION' -X 'github.com/Facets-cloud/fctl/cmd.Commit=$$COMMIT' -X 'github.com/Facets-cloud/fctl/cmd.BuildDate=$$DATE'" -o ./bin/$(BINARY)
 
+# Multi-arch build
+build-multiarch:
+	GOOS=linux   GOARCH=amd64  go build -o ./bin/$(BINARY)-linux-amd64
+	GOOS=linux   GOARCH=arm64  go build -o ./bin/$(BINARY)-linux-arm64
+	GOOS=darwin  GOARCH=amd64  go build -o ./bin/$(BINARY)-darwin-amd64
+	GOOS=darwin  GOARCH=arm64  go build -o ./bin/$(BINARY)-darwin-arm64
+	GOOS=windows GOARCH=amd64  go build -o ./bin/$(BINARY)-windows-amd64.exe
+
 # Run tests
 test:
 	go test ./...

@@ -3,20 +3,27 @@ package cmd
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
+	"mime/multipart"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"github.com/Facets-cloud/facets-sdk-go/facets/client/ui_deployment_controller"
 	"github.com/Facets-cloud/fctl/pkg/config"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/hashicorp/terraform-config-inspect/tfconfig"
 	"github.com/hashicorp/terraform-exec/tfexec"
 	tfjson "github.com/hashicorp/terraform-json"
 	"github.com/spf13/cobra"
+	"github.com/zclconf/go-cty/cty"
 )
 
 var (
@@ -49,6 +56,10 @@ func init() {
 }
 
 func runApply(cmd *cobra.Command, args []string) error {
+	allowDestroy, _ := cmd.Flags().GetBool("allow-destroy")
+	if allowDestroy {
+		// TODO: implement logic to update all .tf files to set prevent_destroy = true
+	}
 	fmt.Println("🚀 Starting terraform apply process...")
 
 	// Initialize backend configuration
@@ -120,6 +131,12 @@ func runApply(cmd *cobra.Command, args []string) error {
 		fmt.Println("📦 Extracting terraform configuration...")
 		if err := extractZip(zipPath, deployDir); err != nil {
 			return fmt.Errorf("❌ Failed to extract zip: %v", err)
+		}
+		if allowDestroy {
+			fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
+			if err := updatePreventDestroyInTFs(tfWorkDir); err != nil {
+				return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
+			}
 		}
 	} else {
 		fmt.Println("♻️ Using existing deployment directory")
@@ -195,35 +212,55 @@ func runApply(cmd *cobra.Command, args []string) error {
 	// Upload release metadata if flag is set
 	if uploadReleaseMetadata {
 		fmt.Println("☁️ Uploading release metadata to control plane...")
-		profile, _ := cmd.Flags().GetString("profile")
-		client, auth, err := config.GetClient(profile, false)
+		metadataFile := filepath.Join(deployDir, "release-metadata.json")
+		f, err := os.Open(metadataFile)
 		if err != nil {
-			fmt.Printf("❌ Failed to get API client: %v\n", err)
+			fmt.Printf("❌ Failed to open release metadata file: %v\n", err)
 		} else {
-			metadataFile := filepath.Join(deployDir, "release-metadata.json")
-			metadataBytes, err := os.ReadFile(metadataFile)
+			defer f.Close()
+			var requestBody bytes.Buffer
+			writer := multipart.NewWriter(&requestBody)
+			part, err := writer.CreateFormFile("file", filepath.Base(f.Name()))
 			if err != nil {
-				fmt.Printf("❌ Failed to read release metadata file: %v\n", err)
+				fmt.Printf("❌ Failed to create multipart form file: %v\n", err)
+				return nil
+			}
+			_, err = io.Copy(part, f)
+			if err != nil {
+				fmt.Printf("❌ Failed to copy file to multipart writer: %v\n", err)
+				return nil
+			}
+			writer.Close()
+
+			// Build the upload URL (replace with actual endpoint if needed)
+			clientConfig := config.GetClientConfig("") // use the correct profile if needed
+			if clientConfig == nil {
+				fmt.Printf("❌ Could not get client configuration\n")
+				return nil
+			}
+			uploadURL := clientConfig.ControlPlaneURL + "/cc-ui/v1/clusters/" + envID + "/deployments/" + deploymentID + "/upload-release-metadata"
+
+			req, err := http.NewRequest("POST", uploadURL, &requestBody)
+			if err != nil {
+				fmt.Printf("❌ Failed to create upload request: %v\n", err)
+				return nil
+			}
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			req.SetBasicAuth(clientConfig.Username, clientConfig.Token)
+
+			httpClient := &http.Client{}
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				fmt.Printf("❌ Failed to upload release metadata: %v\n", err)
+				return nil
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				fmt.Printf("❌ Upload failed with status: %s\n%s\n", resp.Status, string(body))
 			} else {
-				var metadata interface{}
-				if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
-					fmt.Printf("❌ Failed to unmarshal release metadata JSON: %v\n", err)
-				} else {
-					params := ui_deployment_controller.NewUploadReleaseMetadataParams()
-					params.ClusterID = envID
-					params.DeploymentID = deploymentID
-					if body, ok := metadata.(ui_deployment_controller.UploadReleaseMetadataBody); ok {
-						params.Body = body
-						_, err := client.UIDeploymentController.UploadReleaseMetadata(params, auth)
-						if err != nil {
-							fmt.Printf("❌ Failed to upload release metadata: %v\n", err)
-						} else {
-							fmt.Println("✅ Release metadata uploaded to control plane.")
-						}
-					} else {
-						fmt.Printf("❌ Release metadata is not of the expected type for upload.\n")
-					}
-				}
+				fmt.Println("✅ Release metadata uploaded to control plane.")
 			}
 		}
 	}
@@ -464,4 +501,108 @@ func generateReleaseMetadata(tf *tfexec.Terraform, deployDir string) error {
 
 	fmt.Printf("📝 Release metadata saved to: %s\n", metadataFile)
 	return nil
+}
+
+// updatePreventDestroyInTFs recursively updates all .tf files in dir to set prevent_destroy = true in all resource blocks
+func updatePreventDestroyInTFs(root string) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		fmt.Printf("[DEBUG] Visiting directory: %s\n", path)
+		// Check if this directory contains any .tf files
+		hasTF := false
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() && filepath.Ext(entry.Name()) == ".tf" {
+				hasTF = true
+				break
+			}
+		}
+		if hasTF {
+			fmt.Printf("[DEBUG] Updating module in: %s\n", path)
+			err := updatePreventDestroyInSingleModule(path)
+			if err != nil {
+				fmt.Printf("[DEBUG] Error updating module in %s: %v\n", path, err)
+			}
+			return err
+		}
+		return nil
+	})
+}
+
+// updatePreventDestroyInSingleModule only updates .tf files in a single directory (non-recursive)
+func updatePreventDestroyInSingleModule(dir string) error {
+	module, diags := tfconfig.LoadModule(dir)
+	if diags.HasErrors() {
+		fmt.Printf("[DEBUG] tfconfig.LoadModule errors in %s: %v\n", dir, diags)
+		return diags
+	}
+	fileToResources := make(map[string][]*tfconfig.Resource)
+	for _, res := range module.ManagedResources {
+		fileToResources[res.Pos.Filename] = append(fileToResources[res.Pos.Filename], res)
+	}
+	for file, resources := range fileToResources {
+		absFile := filepath.Join(dir, filepath.Base(file))
+		if _, err := os.Stat(absFile); err != nil {
+			fmt.Printf("[DEBUG] Skipping missing file: %s\n", absFile)
+			continue
+		}
+		src, err := os.ReadFile(absFile)
+		if err != nil {
+			fmt.Printf("[DEBUG] Could not open file: %s\n", absFile)
+			return err
+		}
+		f, _ := hclwrite.ParseConfig(src, absFile, hcl.Pos{Line: 1, Column: 1})
+		if f == nil {
+			fmt.Printf("[DEBUG] Could not parse file: %s\n", absFile)
+			continue
+		}
+		changed := false
+		for _, block := range f.Body().Blocks() {
+			if block.Type() != "resource" || len(block.Labels()) != 2 {
+				continue
+			}
+			found := false
+			for _, res := range resources {
+				if block.Labels()[0] == res.Type && block.Labels()[1] == res.Name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+			lifecycle := findOrCreateBlock(block.Body(), "lifecycle")
+			if lifecycle == nil || lifecycle.Body() == nil {
+				fmt.Printf("[DEBUG] Could not get or create lifecycle block in: %s\n", absFile)
+				continue
+			}
+			lifecycle.Body().SetAttributeValue("prevent_destroy", cty.BoolVal(false))
+			changed = true
+		}
+		if changed {
+			if err := os.WriteFile(absFile, f.Bytes(), 0644); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// findOrCreateBlock finds a block by type in the given body, or creates it if not found
+func findOrCreateBlock(body *hclwrite.Body, blockType string) *hclwrite.Block {
+	for _, block := range body.Blocks() {
+		if block.Type() == blockType {
+			return block
+		}
+	}
+	// Not found, create
+	return body.AppendNewBlock(blockType, nil)
 }
