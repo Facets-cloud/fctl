@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/Facets-cloud/fctl/pkg/config"
@@ -30,7 +31,6 @@ var (
 	zipPath               string
 	targetAddr            string
 	statePath             string
-	backendType           string
 	selectedDeployment    string
 	uploadReleaseMetadata bool
 )
@@ -49,7 +49,6 @@ func init() {
 	applyCmd.Flags().StringVarP(&zipPath, "zip", "z", "", "Path to the exported zip file (required)")
 	applyCmd.Flags().StringVarP(&targetAddr, "target", "t", "", "Module target address for selective releases")
 	applyCmd.Flags().StringVarP(&statePath, "state", "s", "", "Path to the state file")
-	applyCmd.Flags().StringVar(&backendType, "backend-type", "", "Type of backend (e.g., s3, gcs)")
 	applyCmd.Flags().BoolVar(&uploadReleaseMetadata, "upload-release-metadata", false, "Upload release metadata to control plane after apply")
 
 	applyCmd.MarkFlagRequired("zip")
@@ -92,6 +91,10 @@ func runApply(cmd *cobra.Command, args []string) error {
 
 	baseDir := filepath.Join(homeDir, ".facets")
 	envDir := filepath.Join(baseDir, envID)
+
+	// Cleanup old releases (directories and zips)
+	cleanupOldReleases(envDir, baseDir, envID)
+
 	deployDir := filepath.Join(envDir, deploymentID)
 	tfWorkDir := filepath.Join(deployDir, "tfexport")
 
@@ -169,17 +172,13 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize terraform with backend configuration if provided
-	initOptions := []tfexec.InitOption{}
-
 	if backendConfig != nil {
-		fmt.Printf("🔄 Configuring %s backend...\n", backendConfig.Type)
-		initOptions = append(initOptions, tfexec.Backend(true))
-		for _, pair := range backendConfig.GetTerraformConfigPairs() {
-			initOptions = append(initOptions, tfexec.BackendConfig(pair))
+		fmt.Printf("🔄 Writing backend.tf.json for %s backend...\n", backendConfig.Type)
+		if err := backendConfig.WriteBackendTFJSON(tfWorkDir); err != nil {
+			return fmt.Errorf("❌ Failed to write backend.tf.json: %v", err)
 		}
 	}
-
-	if err := tf.Init(context.Background(), initOptions...); err != nil {
+	if err := tf.Init(context.Background()); err != nil {
 		return fmt.Errorf("❌ Terraform init failed: %v", err)
 	}
 
@@ -256,6 +255,10 @@ func runApply(cmd *cobra.Command, args []string) error {
 			}
 			defer resp.Body.Close()
 
+			if resp.StatusCode == 503 {
+				fmt.Printf("❌ Control plane is down. Please try again later. (HTTP 503)\n")
+				return nil
+			}
 			if resp.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(resp.Body)
 				fmt.Printf("❌ Upload failed with status: %s\n%s\n", resp.Status, string(body))
@@ -333,10 +336,28 @@ func listExistingDeployments(envDir, currentDeploymentID string) ([]string, erro
 	}
 
 	var deployments []string
+	var deploymentInfos []struct {
+		name  string
+		ctime int64 // Unix timestamp
+	}
 	for _, entry := range entries {
 		if entry.IsDir() && entry.Name() != currentDeploymentID {
-			deployments = append(deployments, entry.Name())
+			info, err := os.Stat(filepath.Join(envDir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			deploymentInfos = append(deploymentInfos, struct {
+				name  string
+				ctime int64
+			}{entry.Name(), info.ModTime().Unix()})
 		}
+	}
+	// Sort by creation/modification time (oldest to newest)
+	sort.Slice(deploymentInfos, func(i, j int) bool {
+		return deploymentInfos[i].ctime < deploymentInfos[j].ctime
+	})
+	for _, di := range deploymentInfos {
+		deployments = append(deployments, di.name)
 	}
 	return deployments, nil
 }
@@ -346,7 +367,7 @@ func promptUser(existingDeployments []string) (bool, error) {
 	for i, deploymentID := range existingDeployments {
 		fmt.Printf("%d. %s\n", i+1, deploymentID)
 	}
-	fmt.Print("\n❓ Do you want to proceed with state file? (y/n): ")
+	fmt.Print("\n❓ Do you want to proceed with an existing state file? if yes enter 'y' else enter 'n' if you want to start fresh with a new state file: ")
 
 	reader := bufio.NewReader(os.Stdin)
 	response, err := reader.ReadString('\n')

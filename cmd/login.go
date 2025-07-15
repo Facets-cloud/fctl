@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,18 +50,38 @@ var loginCmd = &cobra.Command{
 
 		// Prompt for missing host
 		if host == "" {
-			fmt.Print("Enter Facets API host (control_plane_url): ")
-			input, _ := reader.ReadString('\n')
-			host = strings.TrimSpace(input)
-			if host == "" {
-				fmt.Println("❌ Host cannot be empty.")
+			for {
+				fmt.Print("Enter Facets API host (control_plane_url): ")
+				input, _ := reader.ReadString('\n')
+				host = strings.TrimSpace(input)
+				if host == "" {
+					fmt.Println("❌ Host cannot be empty.")
+					continue
+				}
+				// If no protocol, prepend https://
+				if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
+					fmt.Printf("ℹ️  No protocol specified for host. Using https://%s\n", host)
+					host = "https://" + host
+				}
+				parsed, err := url.Parse(host)
+				if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+					fmt.Println("❌ Invalid URL. Please enter a valid http(s) URL, e.g. https://facetsdemo.console.facets.cloud")
+					host = ""
+					continue
+				}
+				break
+			}
+		} else {
+			// If no protocol, prepend https://
+			if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
+				fmt.Printf("ℹ️  No protocol specified for host. Using https://%s\n", host)
+				host = "https://" + host
+			}
+			parsed, err := url.Parse(host)
+			if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+				fmt.Println("❌ Invalid host provided via flag. Please provide a valid http(s) URL.")
 				return
 			}
-		}
-		// Ensure host has protocol
-		if !strings.HasPrefix(host, "http://") && !strings.HasPrefix(host, "https://") {
-			fmt.Printf("ℹ️  No protocol specified for host. Using https://%s\n", host)
-			host = "https://" + host
 		}
 		// Prompt for missing username
 		if username == "" {

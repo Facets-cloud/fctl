@@ -29,7 +29,6 @@ func init() {
 	destroyCmd.Flags().StringVarP(&zipPath, "zip", "z", "", "Path to the exported zip file (required)")
 	destroyCmd.Flags().StringVarP(&targetAddr, "target", "t", "", "Module target address for selective releases")
 	destroyCmd.Flags().StringVarP(&statePath, "state", "s", "", "Path to the state file")
-	destroyCmd.Flags().StringVar(&backendType, "backend-type", "", "Type of backend (e.g., s3, gcs)")
 	destroyCmd.Flags().BoolVar(&uploadReleaseMetadata, "upload-release-metadata", false, "Upload release metadata to control plane after apply")
 
 	destroyCmd.MarkFlagRequired("zip")
@@ -69,6 +68,10 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 
 	baseDir := filepath.Join(homeDir, ".facets")
 	envDir := filepath.Join(baseDir, envID)
+
+	// Cleanup old releases (directories and zips)
+	cleanupOldReleases(envDir, baseDir, envID)
+
 	deployDir := filepath.Join(envDir, deploymentID)
 	tfWorkDir := filepath.Join(deployDir, "tfexport")
 
@@ -146,17 +149,13 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize terraform with backend configuration if provided
-	initOptions := []tfexec.InitOption{}
-
 	if backendConfig != nil {
-		fmt.Printf("🔄 Configuring %s backend...\n", backendConfig.Type)
-		initOptions = append(initOptions, tfexec.Backend(true))
-		for _, pair := range backendConfig.GetTerraformConfigPairs() {
-			initOptions = append(initOptions, tfexec.BackendConfig(pair))
+		fmt.Printf("🔄 Writing backend.tf.json for %s backend...\n", backendConfig.Type)
+		if err := backendConfig.WriteBackendTFJSON(tfWorkDir); err != nil {
+			return fmt.Errorf("❌ Failed to write backend.tf.json: %v", err)
 		}
 	}
-
-	if err := tf.Init(context.Background(), initOptions...); err != nil {
+	if err := tf.Init(context.Background()); err != nil {
 		return fmt.Errorf("❌ Terraform init failed: %v", err)
 	}
 
@@ -233,6 +232,10 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 			}
 			defer resp.Body.Close()
 
+			if resp.StatusCode == 503 {
+				fmt.Printf("❌ Control plane is down. Please try again later. (HTTP 503)\n")
+				return nil
+			}
 			if resp.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(resp.Body)
 				fmt.Printf("❌ Upload failed with status: %s\n%s\n", resp.Status, string(body))

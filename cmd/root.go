@@ -20,6 +20,7 @@ var asciiArt = `
 `
 
 var AllowDestroyFlag bool
+var backendType string
 
 var rootCmd = &cobra.Command{
 	Use:   "fctl",
@@ -56,5 +57,6 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringP("profile", "p", "", "The profile to use from your credentials file")
+	rootCmd.PersistentFlags().StringVar(&backendType, "backend", "", "Type of backend (e.g., s3, gcs)")
 	rootCmd.PersistentFlags().BoolVar(&AllowDestroyFlag, "allow-destroy", false, "Allow resource destroy by setting prevent_destroy = true in all Terraform resources")
 }

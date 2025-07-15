@@ -153,29 +153,70 @@ var exportCmd = &cobra.Command{
 			timeEstimateMsg = fmt.Sprintf(" (⏱️ Est. %.1f minutes based on last 10 exports)", avgTime.Minutes())
 		}
 
-		params := ui_deployment_controller.NewTriggerTerraformExportParams()
-		params.ClusterID = environment
-
-		response, err := client.UIDeploymentController.TriggerTerraformExport(params, auth)
+		// 1. Check for running TERRAFORM_EXPORT deployments
+		getDeploymentsParams := ui_deployment_controller.NewGetDeploymentsParams()
+		getDeploymentsParams.ClusterID = environment
+		deploymentsResp, err := client.UIDeploymentController.GetDeployments(getDeploymentsParams, auth)
 		if err != nil {
-			s.Fail("❌ Error triggering Terraform Export")
-			fmt.Printf("🔴 Could not trigger terraform export: %v\n", err)
+			// Check for control plane down (HTTP 503)
+			if apiErr, ok := err.(*runtime.APIError); ok && apiErr.Code == 503 {
+				s.Fail("❌ Control plane is down. Please try again later.")
+				fmt.Println("🔴 The Facets control plane is currently unavailable (HTTP 503). Please try again later.")
+				return
+			}
+			s.Fail("❌ Error fetching deployments")
+			fmt.Printf("🔴 Could not get deployments: %v\n", err)
 			return
 		}
 
-		if response.IsCode(200) {
-			s.UpdateMessage("🦄 Terraform export triggered with id: " + response.Payload.ID + timeEstimateMsg)
-		} else {
-			s.Fail("❌ Could not trigger terraform export: response code " + strconv.Itoa(response.Code()))
+		var runningExportID string
+		var runningExportStatus string
+		for _, d := range deploymentsResp.Payload.Deployments {
+			if d.ReleaseType == "TERRAFORM_EXPORT" && (d.Status == "IN_PROGRESS" || d.Status == "QUEUED") {
+				runningExportID = d.ID
+				runningExportStatus = d.Status
+				break
+			}
 		}
 
-		startTime := time.Now()
-		// wait for the export to complete, check if deployment is completed
+		var deploymentID string
+		var deploymentStartTime time.Time
+		if runningExportID != "" {
+			s.UpdateMessage(fmt.Sprintf("⏳ Found running Terraform export (status: %s, id: %s). Waiting for it to complete...", runningExportStatus, runningExportID))
+			deploymentID = runningExportID
+			// Find the running deployment object to get its start time
+			for _, d := range deploymentsResp.Payload.Deployments {
+				if d.ID == runningExportID {
+					deploymentStartTime = time.Time(d.CreatedOn)
+					break
+				}
+			}
+		} else {
+			// 2. No running export, trigger a new one
+			params := ui_deployment_controller.NewTriggerTerraformExportParams()
+			params.ClusterID = environment
+			response, err := client.UIDeploymentController.TriggerTerraformExport(params, auth)
+			if err != nil {
+				s.Fail("❌ Error triggering Terraform Export")
+				fmt.Printf("🔴 Could not trigger terraform export: %v\n", err)
+				return
+			}
+			if response.IsCode(200) && response.Payload.Status == "IN_PROGRESS" {
+				s.UpdateMessage("🦄 Terraform export triggered with id: " + response.Payload.ID + timeEstimateMsg)
+				deploymentID = response.Payload.ID
+				deploymentStartTime = time.Now()
+			} else {
+				s.Fail("❌ Could not trigger terraform export: response code " + strconv.Itoa(response.Code()) + " and payload: " + response.Payload.ID + " and status: " + response.Payload.Status)
+				return
+			}
+		}
+
+		// 3. Wait for the export to complete
 		for {
 			time.Sleep(5 * time.Second)
 			getDeploymentParams := ui_deployment_controller.NewGetDeploymentParams()
 			getDeploymentParams.ClusterID = environment
-			getDeploymentParams.DeploymentID = response.Payload.ID
+			getDeploymentParams.DeploymentID = deploymentID
 			deploymentStatus, err := client.UIDeploymentController.GetDeployment(getDeploymentParams, auth)
 			if err != nil {
 				s.Fail("❌ Could not get deployment status")
@@ -190,7 +231,7 @@ var exportCmd = &cobra.Command{
 				}
 				break
 			} else {
-				elapsed := time.Since(startTime)
+				elapsed := time.Since(deploymentStartTime)
 				var remainingMsg string
 				if avgTime > 0 {
 					remaining := avgTime - elapsed
@@ -202,7 +243,7 @@ var exportCmd = &cobra.Command{
 			}
 		}
 
-		// Now we download the export using direct HTTP request
+		// 4. Download the export for the completed deployment
 		clientConfig := config.GetClientConfig(profile)
 		if clientConfig == nil {
 			s.Fail("❌ Could not get client configuration")
@@ -210,7 +251,14 @@ var exportCmd = &cobra.Command{
 		}
 		s.UpdateMessage("📥 Preparing to download Terraform export...")
 
-		deploymentID := response.Payload.ID
+		filename := fmt.Sprintf("terraform-export-%s-%s-%s.zip", environment, deploymentID, time.Now().Format("20060102-150405"))
+		currentDir, err := os.Getwd()
+		if err != nil {
+			s.Fail("❌ Could not get current directory: " + err.Error())
+			return
+		}
+
+		filepath := filepath.Join(currentDir, filename)
 		downloadURL := fmt.Sprintf("%s/cc-ui/v1/clusters/%s/deployments/%s/download-terraform-export",
 			clientConfig.ControlPlaneURL,
 			environment,
@@ -238,14 +286,6 @@ var exportCmd = &cobra.Command{
 			return
 		}
 
-		filename := fmt.Sprintf("terraform-export-%s-%s-%s.zip", environment, deploymentID, time.Now().Format("20060102-150405"))
-		currentDir, err := os.Getwd()
-		if err != nil {
-			s.Fail("❌ Could not get current directory: " + err.Error())
-			return
-		}
-
-		filepath := filepath.Join(currentDir, filename)
 		file, err := os.Create(filepath)
 		if err != nil {
 			s.Fail("❌ Could not create export file: " + err.Error())

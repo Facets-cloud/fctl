@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -19,6 +21,7 @@ var S3BackendVars = []string{
 	"region",
 	"access_key",
 	"secret_key",
+	"dynamodb_table", // optional
 	"endpoint",      // optional
 	"session_token", // optional
 }
@@ -116,5 +119,31 @@ func (c *BackendConfig) Validate() error {
 		return fmt.Errorf("missing required backend variables: %s", strings.Join(missingVars, ", "))
 	}
 
+	return nil
+}
+
+// WriteBackendTFJSON writes a backend.tf.json file in the given directory for this backend config.
+func (c *BackendConfig) WriteBackendTFJSON(dir string) error {
+	if c == nil {
+		return nil // No backend config to write
+	}
+
+	backendObj := map[string]interface{}{
+		"terraform": map[string]interface{}{
+			"backend": map[string]interface{}{
+				c.Type: c.GetTerraformConfig(),
+			},
+		},
+	}
+
+	jsonBytes, err := json.MarshalIndent(backendObj, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal backend.tf.json: %w", err)
+	}
+
+	filePath := filepath.Join(dir, "backend.tf.json")
+	if err := os.WriteFile(filePath, jsonBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write backend.tf.json: %w", err)
+	}
 	return nil
 }
