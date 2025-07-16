@@ -29,8 +29,8 @@ func cleanupOldReleases(envDir, baseDir, envID string) {
 	}
 
 	// --- Cleanup Zip Files ---
-	// Zips are stored in the current working directory, matching pattern: terraform-export-<envID>-<deploymentID>-YYYYMMDD-HHMMSS.zip
-	zipPattern := regexp.MustCompile(`terraform-export-` + regexp.QuoteMeta(envID) + `-[^-]+-\d{8}-\d{6}\.zip`)
+	// Zips are stored in the current working directory, matching pattern: <deploymentID>.zip (UUID format)
+	zipPattern := regexp.MustCompile(`[a-fA-F0-9\-]{36}\.zip$`)
 	files, err := os.ReadDir(baseDir)
 	if err == nil {
 		var zips []string

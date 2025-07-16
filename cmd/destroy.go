@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/Facets-cloud/fctl/pkg/config"
+	"github.com/Facets-cloud/fctl/pkg/utils"
 	"github.com/hashicorp/terraform-exec/tfexec"
 	"github.com/spf13/cobra"
 )
@@ -52,10 +53,24 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 		fmt.Printf("🔐 Using %s backend for state management\n", backendConfig.Type)
 	}
 
-	// Extract environment ID and deployment ID from zip filename
-	envID, deploymentID, err := extractEnvIDAndDeploymentID(zipPath)
+	// Extract deployment ID from zip filename
+	deploymentID, err := utils.ExtractDeploymentID(zipPath)
 	if err != nil {
-		return fmt.Errorf("❌ Failed to extract environment or deployment ID: %v", err)
+		return fmt.Errorf("❌ Failed to extract deployment ID: %v", err)
+	}
+
+	// Unzip to a temp dir to read deploymentcontext.json
+	tempDir, err := os.MkdirTemp("", "fctl-unzip-*")
+	if err != nil {
+		return fmt.Errorf("❌ Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	if err := utils.ExtractZip(zipPath, tempDir); err != nil {
+		return fmt.Errorf("❌ Failed to extract zip: %v", err)
+	}
+	envID, err := utils.ExtractEnvIDFromDeploymentContext(tempDir)
+	if err != nil {
+		return fmt.Errorf("❌ Failed to extract environment ID from deploymentcontext.json: %v", err)
 	}
 	fmt.Printf("🌍 Environment ID: %s\n", envID)
 	fmt.Printf("🆔 Deployment ID: %s\n", deploymentID)
@@ -65,7 +80,6 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("❌ Failed to get home directory: %v", err)
 	}
-
 	baseDir := filepath.Join(homeDir, ".facets")
 	envDir := filepath.Join(baseDir, envID)
 
@@ -86,19 +100,18 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 	// 2. No backend is configured (we need local state management)
 	if _, err := os.Stat(tfWorkDir); os.IsNotExist(err) {
 		if backendConfig == nil {
-			existingDeployments, err := listExistingDeployments(envDir, deploymentID)
+			existingDeployments, err := utils.ListExistingDeployments(envDir, deploymentID)
 			if err != nil {
 				return fmt.Errorf("❌ Failed to list existing deployments: %v", err)
 			}
-
 			if len(existingDeployments) > 0 {
-				proceed, err := promptUser(existingDeployments)
+				proceed, selectedDeployment, err := utils.PromptUser(existingDeployments)
 				if err != nil {
 					return fmt.Errorf("❌ User input error: %v", err)
 				}
 				if proceed {
 					fmt.Println("🔄 User chose to proceed with state file from existing deployment")
-					if err := copyStateFromPreviousDeployment(envDir, deploymentID, envID); err != nil {
+					if err := utils.CopyStateFromPreviousDeployment(envDir, deploymentID, envID, selectedDeployment); err != nil {
 						return fmt.Errorf("❌ Failed to copy state file: %v", err)
 					}
 				}
@@ -106,15 +119,14 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 		} else {
 			fmt.Printf("ℹ️  Using %s backend for state management\n", backendConfig.Type)
 		}
-
-		// Extract zip contents
+		// Now extract zip contents to deployDir
 		fmt.Println("📦 Extracting terraform configuration...")
-		if err := extractZip(zipPath, deployDir); err != nil {
+		if err := utils.ExtractZip(zipPath, deployDir); err != nil {
 			return fmt.Errorf("❌ Failed to extract zip: %v", err)
 		}
 		if allowDestroy {
 			fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
-			if err := updatePreventDestroyInTFs(tfWorkDir); err != nil {
+			if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
 				return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
 			}
 		}
@@ -143,7 +155,7 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 		}
 
 		destPath := filepath.Join(stateDir, "terraform.tfstate")
-		if err := copyFile(statePath, destPath); err != nil {
+		if err := utils.CopyFile(statePath, destPath); err != nil {
 			return fmt.Errorf("❌ Failed to copy state file: %v", err)
 		}
 	}
@@ -181,7 +193,7 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 
 	// Generate release metadata
 	fmt.Println("📊 Generating release metadata...")
-	if err := generateReleaseMetadata(tf, deployDir); err != nil {
+	if err := utils.GenerateReleaseMetadata(tf, deployDir); err != nil {
 		fmt.Printf("⚠️ Warning: Failed to generate release metadata: %v\n", err)
 	}
 
@@ -249,6 +261,16 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 	fmt.Printf("📍 Deployment directory: %s\n", deployDir)
 	if backendConfig == nil {
 		fmt.Printf("💾 State file location: %s/terraform.tfstate.d/%s/terraform.tfstate\n", tfWorkDir, envID)
+		// Save latest state for this environment
+		latestStatePath := filepath.Join(envDir, "latest.tfstate")
+		currentStatePath := filepath.Join(tfWorkDir, "terraform.tfstate.d", envID, "terraform.tfstate")
+		if _, err := os.Stat(currentStatePath); err == nil {
+			if err := utils.CopyFile(currentStatePath, latestStatePath); err != nil {
+				fmt.Printf("⚠️ Warning: Failed to save latest state: %v\n", err)
+			} else {
+				fmt.Printf("📝 Latest state saved to: %s\n", latestStatePath)
+			}
+		}
 	}
 
 	return nil

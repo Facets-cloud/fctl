@@ -13,8 +13,11 @@ import (
 
 	"github.com/Facets-cloud/facets-sdk-go/facets/client"
 	"github.com/Facets-cloud/facets-sdk-go/facets/client/ui_deployment_controller"
+	"github.com/Facets-cloud/facets-sdk-go/facets/client/ui_stack_controller"
 	"github.com/Facets-cloud/fctl/pkg/config"
+	"github.com/Facets-cloud/fctl/pkg/utils"
 	"github.com/go-openapi/runtime"
+	"github.com/hashicorp/terraform-exec/tfexec"
 	"github.com/spf13/cobra"
 	"github.com/yarlson/pin"
 )
@@ -118,9 +121,12 @@ var exportCmd = &cobra.Command{
 	Short: "Export a Facets environment as a Terraform configuration.",
 	Long:  `Export your Facets project environment as a Terraform configuration zip file. This enables you to manage infrastructure as code, perform offline planning, and apply changes in a controlled manner.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		environment, _ := cmd.Flags().GetString("environment")
+		environment, _ := cmd.Flags().GetString("environment-id")
+		project, _ := cmd.Flags().GetString("project")
+		envName, _ := cmd.Flags().GetString("env-name")
+		includeProviders, _ := cmd.Flags().GetBool("include-providers")
 
-		s := pin.New("🚀 Initializing export for environment: "+environment+"...",
+		s := pin.New("🚀 Initializing export...",
 			pin.WithSpinnerColor(pin.ColorCyan),
 			pin.WithTextColor(pin.ColorYellow),
 			pin.WithDoneSymbol('✔'),
@@ -133,16 +139,70 @@ var exportCmd = &cobra.Command{
 		cancel := s.Start(context.Background())
 		defer cancel()
 
-		if environment == "" {
-			s.Fail("❌ Environment ID is required")
-			return
-		}
-
 		profile, _ := cmd.Flags().GetString("profile")
 		client, auth, err := config.GetClient(profile, false)
 		if err != nil {
 			s.Fail("❌ Error fetching client")
 			fmt.Printf("🔴 Could not get client: %v\n", err)
+			return
+		}
+
+		// If environment is not provided, but project and env-name are, resolve environment ID
+		if environment == "" && project != "" && envName != "" {
+			s.UpdateMessage("🔍 Resolving environment ID from project and environment name...")
+			// 1. Get all stacks (projects)
+			stackParams := ui_stack_controller.NewGetStacksParams()
+			stacksResp, err := client.UIStackController.GetStacks(stackParams, auth)
+			if err != nil {
+				s.Fail("❌ Error fetching projects (stacks)")
+				if stacksResp.Code() == 503 {
+					fmt.Printf("🔴 Control plane is unreachable or down (HTTP 503)\n")
+				} else {
+					fmt.Printf("🔴 Could not get stacks: %v\n", err)
+				}
+				return
+			}
+			var foundStackName string
+			for _, stack := range stacksResp.Payload {
+				if stack.Name == project {
+					foundStackName = stack.Name
+					break
+				}
+			}
+			if foundStackName == "" {
+				s.Fail("❌ Project (stack) not found: " + project)
+				return
+			}
+			// 2. Get all clusters (environments) for the stack
+			clusterParams := ui_stack_controller.NewGetClustersParams()
+			clusterParams.StackName = foundStackName
+			clustersResp, err := client.UIStackController.GetClusters(clusterParams, auth)
+			if err != nil {
+				s.Fail("❌ Error fetching environments (clusters) for project: " + foundStackName)
+				if clustersResp.Code() == 503 {
+					fmt.Printf("🔴 Control plane is unreachable or down (HTTP 503)\n")
+				} else {
+					fmt.Printf("🔴 Could not get clusters: %v\n", err)
+				}
+				return
+			}
+			var foundEnvID string
+			for _, cluster := range clustersResp.Payload {
+				if cluster.Name != nil && *cluster.Name == envName {
+					foundEnvID = cluster.ID
+					break
+				}
+			}
+			if foundEnvID == "" {
+				s.Fail("❌ Environment not found: " + envName)
+				return
+			}
+			environment = foundEnvID
+			s.UpdateMessage("✅ Resolved environment ID: " + environment)
+		}
+
+		if environment == "" {
+			s.Fail("❌ Environment ID is required (either --environment-id or --project and --env-name)")
 			return
 		}
 
@@ -251,7 +311,7 @@ var exportCmd = &cobra.Command{
 		}
 		s.UpdateMessage("📥 Preparing to download Terraform export...")
 
-		filename := fmt.Sprintf("terraform-export-%s-%s-%s.zip", environment, deploymentID, time.Now().Format("20060102-150405"))
+		filename := fmt.Sprintf("%s.zip", deploymentID)
 		currentDir, err := os.Getwd()
 		if err != nil {
 			s.Fail("❌ Could not get current directory: " + err.Error())
@@ -309,12 +369,48 @@ var exportCmd = &cobra.Command{
 			return
 		}
 
+		// If include-providers is set, extract the zip to a temp directory
+		if includeProviders {
+			tempDir, err := os.MkdirTemp("", "fctl-tfexport-*")
+			if err != nil {
+				s.Fail("❌ Could not create temp directory: " + err.Error())
+				return
+			}
+			defer os.RemoveAll(tempDir)
+
+			if err := utils.ExtractZip(filepath, tempDir); err != nil {
+				s.Fail("❌ Could not extract zip: " + err.Error())
+				return
+			}
+
+			// Run 'terraform init' in tempDir using terraform-exec
+			tf, err := tfexec.NewTerraform(fmt.Sprintf("%s/tfexport", tempDir), "terraform")
+			if err != nil {
+				s.Fail("❌ Failed to create terraform executor: " + err.Error())
+				return
+			}
+			tf.SetStdout(io.Discard)
+			tf.SetStderr(io.Discard)
+			if err := tf.Init(context.Background()); err != nil {
+				s.Fail("❌ 'terraform init' failed: " + err.Error())
+				return
+			}
+
+			// Re-zip the directory, replacing the original zip
+			if err := utils.ZipDir(tempDir, filepath); err != nil {
+				s.Fail("❌ Could not re-zip directory: " + err.Error())
+				return
+			}
+		}
+
 		s.Stop(fmt.Sprintf("✅ Export completed successfully! 📁 Saved to: %s", filepath))
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(exportCmd)
-	exportCmd.Flags().StringP("environment", "e", "", "The environment to export")
-	exportCmd.MarkFlagRequired("environment")
+	exportCmd.Flags().StringP("environment-id", "e", "", "The environment to export")
+	exportCmd.Flags().String("project", "", "The project (stack) name to use for environment lookup")
+	exportCmd.Flags().String("env-name", "", "The environment (cluster) name to use for environment lookup")
+	exportCmd.Flags().Bool("include-providers", false, "Include Terraform providers in the exported zip (runs 'terraform init' and bundles providers for airgapped use)")
 }
