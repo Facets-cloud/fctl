@@ -23,29 +23,12 @@ var AllowDestroyFlag bool
 
 var rootCmd = &cobra.Command{
 	Use:   "fctl",
-	Short: "Facets iac-export Controller: Manage cloud infrastructure, environments, and deployments.",
-	Long: `Facets iac-export Controller (fctl) is a powerful tool to manage your Facets projects, environments, deployments, and cloud resources from the command line.
-
-Key Features:
-- Authenticate and manage user profiles
-- Export and apply Terraform configurations
-- Plan and preview infrastructure changes
-- View version and build metadata
-- And more!`,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Print ASCII art banner for every command
+	Short: "Facets iac-export Controller: Export Facets Environments as Terraform Configurations.",
+	Long:  fmt.Sprintf("\033[35m%s\033[0m\n", description),
+	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println(asciiArt)
-		fmt.Printf("\033[35m%s\033[0m\n", description)
 		fmt.Println()
-		if cmd.Use == "login" {
-			return nil
-		}
-		profile, _ := cmd.Flags().GetString("profile")
-		_, _, err := config.GetClient(profile, false)
-		if err != nil {
-			return fmt.Errorf("\n❌ authentication failed: %v\nPlease run 'fctl login' to authenticate", err)
-		}
-		return nil
+		cmd.Help()
 	},
 }
 
@@ -59,4 +42,23 @@ func Execute() {
 func init() {
 	rootCmd.PersistentFlags().StringP("profile", "p", "", "The profile to use from your credentials file")
 	rootCmd.PersistentFlags().BoolVar(&AllowDestroyFlag, "allow-destroy", false, "Allow resource destroy by setting prevent_destroy = true in all Terraform resources")
+
+	// Move PersistentPreRunE assignment here to avoid initialization cycle
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// Only print banner if not the root command
+		if cmd == rootCmd {
+			return nil
+		}
+		fmt.Println(asciiArt)
+		fmt.Println()
+		if cmd.Use == "login" {
+			return nil
+		}
+		profile, _ := cmd.Flags().GetString("profile")
+		_, _, err := config.GetClient(profile, false)
+		if err != nil {
+			return fmt.Errorf("\n❌ authentication failed: %v\nPlease run 'fctl login' to authenticate", err)
+		}
+		return nil
+	}
 }

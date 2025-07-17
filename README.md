@@ -1,6 +1,30 @@
-# Facets Terraform Export
+# Facets iac-export Controller
 
-A tool for exporting Terraform configurations from Facets.
+Facets iac-export Controller (fctl). A command-line tool to manage infrastructure, environments, deployments, and resources in an air-gapped clouds. It is designed to help users interact with Facets projects and automate workflows around infrastructure as code, primarily using Terraform..
+
+## Usage
+
+```
+fctl [command]
+```
+
+## Available Commands
+- `apply`       Apply a Terraform export to your Facets environment.
+- `completion`  Generate the autocompletion script for the specified shell
+- `destroy`     Destroy resources for a Terraform export in your Facets environment.
+- `export`      Export a Facets environment as a Terraform configuration.
+- `help`        Help about any command
+- `login`       Authenticate and configure your Facets CLI profile.
+- `plan`        Preview changes for a Terraform export in your Facets environment.
+- `repackage`   Tweak the exported zip file by copying files from local into specific paths inside the zip.
+- `version`     Show the CLI version, commit, and build date.
+
+## Flags
+- `--allow-destroy`    Allow resource destroy by setting prevent_destroy = true in all Terraform resources
+- `-h, --help`         Help for fctl
+- `-p, --profile`      The profile to use from your credentials file
+
+Use `fctl [command] --help` for more information about a command.
 
 ## Installation
 
