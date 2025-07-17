@@ -16,15 +16,15 @@ var asciiArt = `
 ██╔══╝  ██║        ██║   ██║     
 ██║     ╚██████╗   ██║   ███████╗
 ╚═╝      ╚═════╝   ╚═╝   ╚══════╝
-                                 
 `
+var description = "Facets iac-export Controller. A command-line tool to manage infrastructure, environments, deployments, and resources in an air-gapped clouds. It is designed to help users interact with Facets projects and automate workflows around infrastructure as code, primarily using Terraform."
 
 var AllowDestroyFlag bool
 
 var rootCmd = &cobra.Command{
 	Use:   "fctl",
-	Short: "Facets Control CLI: Manage cloud infrastructure, environments, and deployments.",
-	Long: `Facets Control CLI (fctl) is a powerful tool to manage your Facets projects, environments, deployments, and cloud resources from the command line.
+	Short: "Facets iac-export Controller: Manage cloud infrastructure, environments, and deployments.",
+	Long: `Facets iac-export Controller (fctl) is a powerful tool to manage your Facets projects, environments, deployments, and cloud resources from the command line.
 
 Key Features:
 - Authenticate and manage user profiles
@@ -35,6 +35,8 @@ Key Features:
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Print ASCII art banner for every command
 		fmt.Println(asciiArt)
+		fmt.Printf("\033[35m%s\033[0m\n", description)
+		fmt.Println()
 		if cmd.Use == "login" {
 			return nil
 		}

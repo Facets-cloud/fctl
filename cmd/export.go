@@ -126,10 +126,13 @@ func ensureWritable(path string) error {
 	})
 }
 
+var exportCopyPairs []string // --copy source:destination
+var exportUploadReleaseMetadata bool
+
 var exportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Export a Facets environment as a Terraform configuration.",
-	Long:  `Export your Facets project environment as a Terraform configuration zip file. This enables you to manage infrastructure as code, perform offline planning, and apply changes in a controlled manner.`,
+	Long:  `Export your Facets project environment as a Terraform configuration zip file. This enables you to manage infrastructure as code, perform offline planning, and apply changes in a controlled manner. Supports adding files to the zip via --copy source:destination pairs.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		environment, _ := cmd.Flags().GetString("environment-id")
 		project, _ := cmd.Flags().GetString("project")
@@ -328,7 +331,7 @@ var exportCmd = &cobra.Command{
 			return
 		}
 
-		filepath := filepath.Join(currentDir, filename)
+		zipFilePath := filepath.Join(currentDir, filename)
 		downloadURL := fmt.Sprintf("%s/cc-ui/v1/clusters/%s/deployments/%s/download-terraform-export",
 			clientConfig.ControlPlaneURL,
 			environment,
@@ -356,7 +359,7 @@ var exportCmd = &cobra.Command{
 			return
 		}
 
-		file, err := os.Create(filepath)
+		file, err := os.Create(zipFilePath)
 		if err != nil {
 			s.Fail("❌ Could not create export file: " + err.Error())
 			return
@@ -388,7 +391,7 @@ var exportCmd = &cobra.Command{
 			}
 			defer os.RemoveAll(tempDir)
 
-			if err := utils.ExtractZip(filepath, tempDir); err != nil {
+			if err := utils.ExtractZip(zipFilePath, tempDir); err != nil {
 				s.Fail("❌ Could not extract zip: " + err.Error())
 				return
 			}
@@ -413,18 +416,77 @@ var exportCmd = &cobra.Command{
 			}
 
 			// Re-zip the directory, replacing the original zip
-			if err := utils.ZipDir(tempDir, filepath); err != nil {
+			if err := utils.ZipDir(tempDir, zipFilePath); err != nil {
 				s.Fail("❌ Could not re-zip directory: " + err.Error())
 				return
 			}
 		}
 
-		s.Stop(fmt.Sprintf("✅ Export completed successfully! 📁 Saved to: %s", filepath))
+		// If --copy is set, extract zip, copy files, and re-zip
+		if len(exportCopyPairs) > 0 {
+			tempDir, err := os.MkdirTemp("", "fctl-export-copy-*")
+			if err != nil {
+				s.Fail("❌ Could not create temp directory for --copy: " + err.Error())
+				return
+			}
+			defer os.RemoveAll(tempDir)
+			if err := utils.ExtractZip(zipFilePath, tempDir); err != nil {
+				s.Fail("❌ Could not extract zip for --copy: " + err.Error())
+				return
+			}
+			s.UpdateMessage("📄 Copying files to zip structure...")
+			for _, pair := range exportCopyPairs {
+				sepIdx := -1
+				for i, c := range pair {
+					if c == ':' {
+						sepIdx = i
+						break
+					}
+				}
+				if sepIdx == -1 {
+					s.Fail(fmt.Sprintf("❌ Invalid --copy value: %s (expected format source:destination)", pair))
+					return
+				}
+				source := pair[:sepIdx]
+				dest := pair[sepIdx+1:]
+				if source == "" || dest == "" {
+					s.Fail(fmt.Sprintf("❌ Invalid --copy value: %s (source and destination required)", pair))
+					return
+				}
+				destPath := filepath.Join(tempDir, dest)
+				srcInfo, err := os.Stat(source)
+				if err != nil {
+					s.Fail(fmt.Sprintf("❌ Failed to stat source: %s", source))
+					return
+				}
+				if srcInfo.IsDir() {
+					if err := utils.CopyDir(source, destPath); err != nil {
+						s.Fail(fmt.Sprintf("❌ Failed to copy directory: %s", source))
+						return
+					}
+				} else {
+					if err := utils.CopyFile(source, destPath); err != nil {
+						s.Fail(fmt.Sprintf("❌ Failed to copy file: %s", source))
+						return
+					}
+				}
+			}
+			if err := utils.ZipDir(tempDir, zipFilePath); err != nil {
+				s.Fail("❌ Could not re-zip after --copy: " + err.Error())
+				return
+			}
+		}
+
+		s.Stop(fmt.Sprintf("✅ Export completed successfully! 📁 Saved to: %s", zipFilePath))
 
 		// Handle post-export actions
 		applyFlag, _ := cmd.Flags().GetBool("apply")
 		planFlag, _ := cmd.Flags().GetBool("plan")
 		destroyFlag, _ := cmd.Flags().GetBool("destroy")
+		if exportUploadReleaseMetadata && !(applyFlag || destroyFlag) {
+			fmt.Println("❌ --upload-release-metadata can only be used with --apply or --destroy.")
+			return
+		}
 		flagCount := 0
 		if applyFlag {
 			flagCount++
@@ -442,6 +504,9 @@ var exportCmd = &cobra.Command{
 		if applyFlag {
 			fmt.Println("\n➡️  Invoking 'fctl apply' on exported zip...")
 			applyCmd.Flags().Set("zip", filename)
+			if exportUploadReleaseMetadata {
+				applyCmd.Flags().Set("upload-release-metadata", "true")
+			}
 			err := runApply(applyCmd, []string{})
 			if err != nil {
 				fmt.Printf("❌ Error during apply: %v\n", err)
@@ -450,6 +515,9 @@ var exportCmd = &cobra.Command{
 		if planFlag {
 			fmt.Println("\n➡️  Invoking 'fctl plan' on exported zip...")
 			planCmd.Flags().Set("zip", filename)
+			if exportUploadReleaseMetadata {
+				planCmd.Flags().Set("upload-release-metadata", "true")
+			}
 			err := runPlan(planCmd, []string{})
 			if err != nil {
 				fmt.Printf("❌ Error during plan: %v\n", err)
@@ -458,6 +526,9 @@ var exportCmd = &cobra.Command{
 		if destroyFlag {
 			fmt.Println("\n➡️  Invoking 'fctl destroy' on exported zip...")
 			destroyCmd.Flags().Set("zip", filename)
+			if exportUploadReleaseMetadata {
+				destroyCmd.Flags().Set("upload-release-metadata", "true")
+			}
 			err := runDestroy(destroyCmd, []string{})
 			if err != nil {
 				fmt.Printf("❌ Error during destroy: %v\n", err)
@@ -477,4 +548,7 @@ func init() {
 	exportCmd.Flags().Bool("apply", false, "Automatically apply the exported Terraform configuration after export")
 	exportCmd.Flags().Bool("plan", false, "Automatically run terraform plan on the exported configuration after export")
 	exportCmd.Flags().Bool("destroy", false, "Automatically destroy resources using the exported configuration after export")
+
+	exportCmd.Flags().StringArrayVar(&exportCopyPairs, "copy", nil, "Copy a file or directory from local into a specific path inside the zip. Format: source:destination. Can be specified multiple times.")
+	exportCmd.Flags().BoolVar(&exportUploadReleaseMetadata, "upload-release-metadata", false, "Upload release metadata to control plane after apply/plan/destroy (must be used with --apply, --plan, or --destroy)")
 }

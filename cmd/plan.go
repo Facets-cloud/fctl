@@ -195,9 +195,9 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		}
 	} else if backendConfig == nil && statePath == "" {
 		// No state file provided, check for latest.tfstate
-		latestStatePath := filepath.Join(envDir, "latest.tfstate")
+		latestStatePath := filepath.Join(envDir, "tf.tfstate")
 		if _, err := os.Stat(latestStatePath); err == nil {
-			fmt.Println("📝 Using latest state for this environment...")
+			fmt.Println("📝 Using latest tf.tfstate for this environment...")
 			stateDir := filepath.Join(tfWorkDir, "terraform.tfstate.d", envID)
 			if err := os.MkdirAll(stateDir, 0755); err != nil {
 				return fmt.Errorf("❌ Failed to create state directory: %v", err)
