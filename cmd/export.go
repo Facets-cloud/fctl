@@ -116,6 +116,16 @@ func getHistoricalDeploymentTime(client *client.Facets, auth runtime.ClientAuthI
 	return total / time.Duration(len(deploymentTimes))
 }
 
+// Recursively set user rwx permissions on all files and directories
+func ensureWritable(path string) error {
+	return filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chmod(p, 0700)
+	})
+}
+
 var exportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Export a Facets environment as a Terraform configuration.",
@@ -383,6 +393,12 @@ var exportCmd = &cobra.Command{
 				return
 			}
 
+			// Ensure all files/dirs are writable by the user
+			if err := ensureWritable(tempDir); err != nil {
+				s.Fail("❌ Could not set permissions: " + err.Error())
+				return
+			}
+
 			// Run 'terraform init' in tempDir using terraform-exec
 			tf, err := tfexec.NewTerraform(fmt.Sprintf("%s/tfexport", tempDir), "terraform")
 			if err != nil {
@@ -404,6 +420,49 @@ var exportCmd = &cobra.Command{
 		}
 
 		s.Stop(fmt.Sprintf("✅ Export completed successfully! 📁 Saved to: %s", filepath))
+
+		// Handle post-export actions
+		applyFlag, _ := cmd.Flags().GetBool("apply")
+		planFlag, _ := cmd.Flags().GetBool("plan")
+		destroyFlag, _ := cmd.Flags().GetBool("destroy")
+		flagCount := 0
+		if applyFlag {
+			flagCount++
+		}
+		if planFlag {
+			flagCount++
+		}
+		if destroyFlag {
+			flagCount++
+		}
+		if flagCount > 1 {
+			fmt.Println("❌ Only one of --apply, --plan, or --destroy can be specified at a time.")
+			return
+		}
+		if applyFlag {
+			fmt.Println("\n➡️  Invoking 'fctl apply' on exported zip...")
+			applyCmd.Flags().Set("zip", filename)
+			err := runApply(applyCmd, []string{})
+			if err != nil {
+				fmt.Printf("❌ Error during apply: %v\n", err)
+			}
+		}
+		if planFlag {
+			fmt.Println("\n➡️  Invoking 'fctl plan' on exported zip...")
+			planCmd.Flags().Set("zip", filename)
+			err := runPlan(planCmd, []string{})
+			if err != nil {
+				fmt.Printf("❌ Error during plan: %v\n", err)
+			}
+		}
+		if destroyFlag {
+			fmt.Println("\n➡️  Invoking 'fctl destroy' on exported zip...")
+			destroyCmd.Flags().Set("zip", filename)
+			err := runDestroy(destroyCmd, []string{})
+			if err != nil {
+				fmt.Printf("❌ Error during destroy: %v\n", err)
+			}
+		}
 	},
 }
 
@@ -413,4 +472,9 @@ func init() {
 	exportCmd.Flags().String("project", "", "The project (stack) name to use for environment lookup")
 	exportCmd.Flags().String("env-name", "", "The environment (cluster) name to use for environment lookup")
 	exportCmd.Flags().Bool("include-providers", false, "Include Terraform providers in the exported zip (runs 'terraform init' and bundles providers for airgapped use)")
+
+	// Add mutually exclusive flags for post-export actions
+	exportCmd.Flags().Bool("apply", false, "Automatically apply the exported Terraform configuration after export")
+	exportCmd.Flags().Bool("plan", false, "Automatically run terraform plan on the exported configuration after export")
+	exportCmd.Flags().Bool("destroy", false, "Automatically destroy resources using the exported configuration after export")
 }

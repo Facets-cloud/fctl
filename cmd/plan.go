@@ -95,19 +95,32 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	// 2. No backend is configured (we need local state management)
 	if _, err := os.Stat(tfWorkDir); os.IsNotExist(err) {
 		if backendConfig == nil {
+			tfStatePath := filepath.Join(envDir, "tf.tfstate")
 			existingDeployments, err := utils.ListExistingDeployments(envDir, deploymentID)
 			if err != nil {
 				return fmt.Errorf("❌ Failed to list existing deployments: %v", err)
 			}
 			if len(existingDeployments) > 0 {
-				proceed, selectedDeployment, err := utils.PromptUser(existingDeployments)
-			if err != nil {
+				proceed, selectedDeployment, err := utils.PromptUser(existingDeployments, tfStatePath)
+				if err != nil {
 					return fmt.Errorf("❌ User input error: %v", err)
-			}
+				}
 				if proceed {
-					fmt.Println("🔄 User chose to proceed with state file from existing deployment")
-					if err := utils.CopyStateFromPreviousDeployment(envDir, deploymentID, envID, selectedDeployment); err != nil {
-						return fmt.Errorf("❌ Failed to copy state file: %v", err)
+					if selectedDeployment == "__USE_TF_TFSTATE__" {
+						fmt.Println("📝 Using tf.tfstate for this deployment...")
+						stateDir := filepath.Join(tfWorkDir, "terraform.tfstate.d", envID)
+						if err := os.MkdirAll(stateDir, 0755); err != nil {
+							return fmt.Errorf("❌ Failed to create state directory: %v", err)
+						}
+						destPath := filepath.Join(stateDir, "terraform.tfstate")
+						if err := utils.CopyFile(tfStatePath, destPath); err != nil {
+							return fmt.Errorf("❌ Failed to copy tf.tfstate: %v", err)
+						}
+					} else {
+						fmt.Println("🔄 User chose to proceed with state file from existing deployment")
+						if err := utils.CopyStateFromPreviousDeployment(envDir, deploymentID, envID, selectedDeployment); err != nil {
+							return fmt.Errorf("❌ Failed to copy state file: %v", err)
+						}
 					}
 				}
 			}

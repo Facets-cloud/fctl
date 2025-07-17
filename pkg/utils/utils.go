@@ -203,19 +203,25 @@ func ListExistingDeployments(envDir, currentDeploymentID string) ([]string, erro
 	return deployments, nil
 }
 
-// PromptUser prompts the user to select a deployment
-func PromptUser(existingDeployments []string) (bool, string, error) {
+// PromptUser prompts the user to select a deployment or use tf.tfstate if available
+func PromptUser(existingDeployments []string, tfStatePath string) (bool, string, error) {
 	fmt.Println("\n⚠️  Found existing deployments in this environment:")
 	for i, deploymentID := range existingDeployments {
 		fmt.Printf("%d. %s\n", i+1, deploymentID)
 	}
-	fmt.Print("\n❓ Do you want to proceed with an existing state file? if yes enter 'y' else enter 'n' if you want to start fresh with a new state file: ")
+	promptMsg := "\n❓ Do you want to proceed with an existing state file? If yes enter 'y', else enter 'n' if you want to start fresh with a new state file, or just press enter to use the tf.tfstate file in the current environment (saved after each release): "
+	fmt.Print(promptMsg)
 	reader := bufio.NewReader(os.Stdin)
 	response, err := reader.ReadString('\n')
 	if err != nil {
 		return false, "", err
 	}
 	response = strings.ToLower(strings.TrimSpace(response))
+	if response == "" && tfStatePath != "" {
+		if _, err := os.Stat(tfStatePath); err == nil {
+			return true, "__USE_TF_TFSTATE__", nil
+		}
+	}
 	if response != "y" && response != "yes" {
 		return false, "", nil
 	}
@@ -504,4 +510,24 @@ func FindOrCreateBlock(body *hclwrite.Body, blockType string) *hclwrite.Block {
 	}
 	// Not found, create
 	return body.AppendNewBlock(blockType, nil)
+}
+
+
+// CopyDir recursively copies a directory from src to dst
+func CopyDir(src string, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(dst, relPath)
+		if info.IsDir() {
+			return os.MkdirAll(targetPath, info.Mode())
+		} else {
+			return CopyFile(path, targetPath)
+		}
+	})
 }
