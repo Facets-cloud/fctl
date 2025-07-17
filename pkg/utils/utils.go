@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"crypto/sha256"
+
 	"github.com/go-ini/ini"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
@@ -512,7 +514,6 @@ func FindOrCreateBlock(body *hclwrite.Body, blockType string) *hclwrite.Block {
 	return body.AppendNewBlock(blockType, nil)
 }
 
-
 // CopyDir recursively copies a directory from src to dst
 func CopyDir(src string, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
@@ -530,4 +531,94 @@ func CopyDir(src string, dst string) error {
 			return CopyFile(path, targetPath)
 		}
 	})
+}
+
+// IsZipDifferentFromDir compares the contents of a zip file and a directory.
+// Returns true if any file in the zip is missing or different (by size or hash) in the directory,
+// or if any file in the directory is missing from the zip.
+func IsZipDifferentFromDir(zipPath, dirPath string) (bool, error) {
+	zipReader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return true, err
+	}
+	defer zipReader.Close()
+
+	zipFiles := make(map[string]*zip.File)
+	for _, f := range zipReader.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		zipFiles[f.Name] = f
+	}
+
+	dirFiles := make(map[string]string) // map[path] = hash
+	err = filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dirPath, path)
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		// Only compare files that are in the zip (ignore extra files in dir)
+		if _, ok := zipFiles[rel]; ok {
+			hash, err := hashFile(path)
+			if err != nil {
+				return err
+			}
+			dirFiles[rel] = hash
+		}
+		return nil
+	})
+	if err != nil {
+		return true, err
+	}
+
+	// Compare zip files to dir files
+	for name, zf := range zipFiles {
+		zfh, err := hashZipFile(zf)
+		if err != nil {
+			return true, err
+		}
+		dh, ok := dirFiles[name]
+		if !ok {
+			// File missing in dir
+			return true, nil
+		}
+		if zfh != dh {
+			// File content differs
+			return true, nil
+		}
+	}
+	// Optionally: check for extra files in dir not in zip (not required for your use case)
+	return false, nil
+}
+
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	sha := sha256.New()
+	if _, err := io.Copy(sha, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha.Sum(nil)), nil
+}
+
+func hashZipFile(zf *zip.File) (string, error) {
+	f, err := zf.Open()
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	sha := sha256.New()
+	if _, err := io.Copy(sha, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha.Sum(nil)), nil
 }

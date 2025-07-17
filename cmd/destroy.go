@@ -145,6 +145,25 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		fmt.Println("♻️ Using existing deployment directory")
+		// Check if zip contents differ from deployDir
+		different, err := utils.IsZipDifferentFromDir(zipPath, deployDir)
+		if err != nil {
+			return fmt.Errorf("❌ Failed to compare zip and directory: %v", err)
+		}
+		if different {
+			fmt.Println("📦 Changes detected in zip, extracting to deployment directory...")
+			if err := utils.ExtractZip(zipPath, deployDir); err != nil {
+				return fmt.Errorf("❌ Failed to extract zip: %v", err)
+			}
+			if allowDestroy {
+				fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
+				if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
+					return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
+				}
+			}
+		} else {
+			fmt.Println("✅ No changes detected in zip, skipping extraction.")
+		}
 	}
 
 	// Initialize terraform
