@@ -622,3 +622,21 @@ func hashZipFile(zf *zip.File) (string, error) {
 	}
 	return fmt.Sprintf("%x", sha.Sum(nil)), nil
 }
+
+// FixPermissions recursively sets permissions: 755 for directories, 644 for files, 755 for provider binaries
+func FixPermissions(root string) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return os.Chmod(path, 0755)
+		}
+		mode := os.FileMode(0644)
+		// Make provider binaries executable (common pattern)
+		if strings.Contains(path, "terraform-provider-") || strings.HasSuffix(path, ".provider") {
+			mode = 0755
+		}
+		return os.Chmod(path, mode)
+	})
+}

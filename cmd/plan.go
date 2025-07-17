@@ -132,6 +132,10 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		if err := utils.ExtractZip(zipPath, deployDir); err != nil {
 			return fmt.Errorf("❌ Failed to extract zip: %v", err)
 		}
+		// Fix permissions after extraction
+		if err := utils.FixPermissions(tfWorkDir); err != nil {
+			return fmt.Errorf("❌ Failed to fix permissions: %v", err)
+		}
 		if allowDestroy {
 			fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
 			if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
@@ -149,6 +153,10 @@ func runPlan(cmd *cobra.Command, args []string) error {
 			fmt.Println("📦 Changes detected in zip, extracting to deployment directory...")
 			if err := utils.ExtractZip(zipPath, deployDir); err != nil {
 				return fmt.Errorf("❌ Failed to extract zip: %v", err)
+			}
+			// Fix permissions after extraction
+			if err := utils.FixPermissions(tfWorkDir); err != nil {
+				return fmt.Errorf("❌ Failed to fix permissions: %v", err)
 			}
 			if allowDestroy {
 				fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
