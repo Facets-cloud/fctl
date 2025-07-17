@@ -22,8 +22,8 @@ var S3BackendVars = []string{
 	"access_key",
 	"secret_key",
 	"dynamodb_table", // optional
-	"endpoint",      // optional
-	"session_token", // optional
+	"endpoint",       // optional
+	"session_token",  // optional
 }
 
 // GCSBackendVars contains required variables for GCS backend
@@ -34,7 +34,8 @@ var GCSBackendVars = []string{
 }
 
 // NewBackendConfig creates a new backend configuration
-func NewBackendConfig(backendType string) (*BackendConfig, error) {
+func NewBackendConfig() (*BackendConfig, error) {
+	backendType := os.Getenv("TF_BACKEND_TYPE")
 	backendType = strings.ToLower(backendType)
 	if backendType == "" {
 		return nil, nil // Local backend

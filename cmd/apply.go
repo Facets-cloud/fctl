@@ -51,7 +51,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 	fmt.Println("🚀 Starting terraform apply process...")
 
 	// Initialize backend configuration
-	backendConfig, err := config.NewBackendConfig(backendType)
+	backendConfig, err := config.NewBackendConfig()
 	if err != nil {
 		return fmt.Errorf("❌ Failed to initialize backend configuration: %v", err)
 	}

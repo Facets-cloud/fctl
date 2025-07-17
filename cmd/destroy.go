@@ -40,7 +40,7 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 	fmt.Println("🔥 Starting terraform destroy process...")
 
 	// Initialize backend configuration
-	backendConfig, err := config.NewBackendConfig(backendType)
+	backendConfig, err := config.NewBackendConfig()
 	if err != nil {
 		return fmt.Errorf("❌ Failed to initialize backend configuration: %v", err)
 	}
