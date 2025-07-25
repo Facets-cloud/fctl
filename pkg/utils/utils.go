@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"crypto/sha256"
@@ -24,6 +25,7 @@ import (
 	"github.com/hashicorp/terraform-exec/tfexec"
 	tfjson "github.com/hashicorp/terraform-json"
 	"github.com/zclconf/go-cty/cty"
+	"golang.org/x/term"
 )
 
 // ExtractEnvIDFromDeploymentContext reads deploymentcontext.json in dir and returns .cluster.id
@@ -207,7 +209,7 @@ func ListExistingDeployments(envDir, currentDeploymentID string) ([]string, erro
 
 // PromptUser prompts the user to select a deployment or use tf.tfstate if available
 func PromptUser(existingDeployments []string, tfStatePath string) (bool, string, error) {
-	fmt.Println("\n⚠️  Found existing deployments in this environment:")
+	fmt.Println("\n⚠️  Found existing deployments for this environment:")
 	for i, deploymentID := range existingDeployments {
 		fmt.Printf("%d. %s\n", i+1, deploymentID)
 	}
@@ -410,7 +412,7 @@ func UpdateProfileExpiry(profile string) {
 	}
 }
 
-// updatePreventDestroyInTFs recursively updates all .tf files in dir to set prevent_destroy = true in all resource blocks
+// updatePreventDestroyInTFs recursively updates all .tf files in dir to set prevent_destroy = false in all resource blocks
 func UpdatePreventDestroyInTFs(root string) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -639,4 +641,55 @@ func FixPermissions(root string) error {
 		}
 		return os.Chmod(path, mode)
 	})
+}
+
+// ReadMaskedInput reads input from the terminal without echoing characters (for passwords/tokens)
+func ReadMaskedInput(prompt string) (string, error) {
+	fmt.Print(prompt)
+
+	// Check if we're on a terminal
+	if !term.IsTerminal(int(syscall.Stdin)) {
+		// Fallback to regular input if not on terminal
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(input), nil
+	}
+
+	// Use terminal for masked input
+	bytePassword, err := term.ReadPassword(int(syscall.Stdin))
+	if err != nil {
+		return "", err
+	}
+
+	fmt.Println() // Add newline after masked input
+	return strings.TrimSpace(string(bytePassword)), nil
+}
+
+// FormatDuration formats a time.Duration in a human-readable format
+// Examples: "1m30s", "45s", "2h15m"
+func FormatDuration(d time.Duration) string {
+	if d < time.Second {
+		return "0s"
+	}
+
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+
+	var parts []string
+
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	if minutes > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", minutes))
+	}
+	if seconds > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%ds", seconds))
+	}
+
+	return strings.Join(parts, "")
 }

@@ -45,9 +45,6 @@ func init() {
 
 func runApply(cmd *cobra.Command, args []string) error {
 	allowDestroy, _ := cmd.Flags().GetBool("allow-destroy")
-	if allowDestroy {
-		// TODO: implement logic to update all .tf files to set prevent_destroy = true
-	}
 	fmt.Println("🚀 Starting terraform apply process...")
 
 	// Initialize backend configuration
@@ -152,12 +149,6 @@ func runApply(cmd *cobra.Command, args []string) error {
 		if err := utils.FixPermissions(tfWorkDir); err != nil {
 			return fmt.Errorf("❌ Failed to fix permissions: %v", err)
 		}
-		if allowDestroy {
-			fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
-			if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
-				return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
-			}
-		}
 	} else {
 		fmt.Println("♻️ Using existing deployment directory")
 		// Check if zip contents differ from deployDir
@@ -174,14 +165,14 @@ func runApply(cmd *cobra.Command, args []string) error {
 			if err := utils.FixPermissions(tfWorkDir); err != nil {
 				return fmt.Errorf("❌ Failed to fix permissions: %v", err)
 			}
-			if allowDestroy {
-				fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
-				if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
-					return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
-				}
-			}
 		} else {
 			fmt.Println("✅ No changes detected in zip, skipping extraction.")
+		}
+	}
+	if allowDestroy {
+		fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
+		if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
+			return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
 		}
 	}
 
@@ -239,6 +230,20 @@ func runApply(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("🔨 Running terraform apply...")
 	if err := tf.Apply(context.Background(), applyOptions...); err != nil {
+		// even if the terraform apply fails, we need to update the state file
+		if backendConfig == nil {
+			fmt.Printf("💾 State file location: %s/terraform.tfstate.d/%s/terraform.tfstate\n", tfWorkDir, envID)
+			// Save latest state for this environment
+			latestStatePath := filepath.Join(envDir, "tf.tfstate")
+			currentStatePath := filepath.Join(tfWorkDir, "terraform.tfstate.d", envID, "terraform.tfstate")
+			if _, err := os.Stat(currentStatePath); err == nil {
+				if err := utils.CopyFile(currentStatePath, latestStatePath); err != nil {
+					fmt.Printf("⚠️ Warning: Failed to save latest state: %v\n", err)
+				} else {
+					fmt.Printf("📝 Latest state saved to: %s\n", latestStatePath)
+				}
+			}
+		}
 		return fmt.Errorf("❌ Terraform apply failed: %v", err)
 	}
 

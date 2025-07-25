@@ -41,7 +41,7 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringP("profile", "p", "", "The profile to use from your credentials file")
-	rootCmd.PersistentFlags().BoolVar(&AllowDestroyFlag, "allow-destroy", false, "Allow resource destroy by setting prevent_destroy = true in all Terraform resources")
+	rootCmd.PersistentFlags().BoolVar(&AllowDestroyFlag, "allow-destroy", false, "Allow resource destroy by setting prevent_destroy = false in all Terraform resources")
 
 	// Move PersistentPreRunE assignment here to avoid initialization cycle
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {

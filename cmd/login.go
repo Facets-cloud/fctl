@@ -98,9 +98,12 @@ var loginCmd = &cobra.Command{
 		}
 		// Prompt for missing token
 		if token == "" {
-			fmt.Print("Enter Facets API token: ")
-			input, _ := reader.ReadString('\n')
-			token = strings.TrimSpace(input)
+			input, err := utils.ReadMaskedInput("Enter Facets API token: ")
+			if err != nil {
+				fmt.Printf("❌ Error reading token: %v\n", err)
+				return
+			}
+			token = input
 			if token == "" {
 				fmt.Println("❌ Token cannot be empty.")
 				return

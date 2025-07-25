@@ -141,12 +141,6 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 		if err := utils.FixPermissions(tfWorkDir); err != nil {
 			return fmt.Errorf("❌ Failed to fix permissions: %v", err)
 		}
-		if allowDestroy {
-			fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
-			if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
-				return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
-			}
-		}
 	} else {
 		fmt.Println("♻️ Using existing deployment directory")
 		// Check if zip contents differ from deployDir
@@ -163,14 +157,14 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 			if err := utils.FixPermissions(tfWorkDir); err != nil {
 				return fmt.Errorf("❌ Failed to fix permissions: %v", err)
 			}
-			if allowDestroy {
-				fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
-				if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
-					return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
-				}
-			}
 		} else {
 			fmt.Println("✅ No changes detected in zip, skipping extraction.")
+		}
+	}
+	if allowDestroy {
+		fmt.Println("🔒 Enforcing prevent_destroy = false in all Terraform resources...")
+		if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
+			return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
 		}
 	}
 
@@ -228,6 +222,19 @@ func runDestroy(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("💥 Running terraform destroy...")
 	if err := tf.Destroy(context.Background(), destroyOptions...); err != nil {
+		if backendConfig == nil {
+			fmt.Printf("💾 State file location: %s/terraform.tfstate.d/%s/terraform.tfstate\n", tfWorkDir, envID)
+			// Save latest state for this environment
+			latestStatePath := filepath.Join(envDir, "tf.tfstate")
+			currentStatePath := filepath.Join(tfWorkDir, "terraform.tfstate.d", envID, "terraform.tfstate")
+			if _, err := os.Stat(currentStatePath); err == nil {
+				if err := utils.CopyFile(currentStatePath, latestStatePath); err != nil {
+					fmt.Printf("⚠️ Warning: Failed to save latest state: %v\n", err)
+				} else {
+					fmt.Printf("📝 Latest state saved to: %s\n", latestStatePath)
+				}
+			}
+		}
 		return fmt.Errorf("❌ Terraform destroy failed: %v", err)
 	}
 

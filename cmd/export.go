@@ -56,11 +56,12 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 		if percentage > 0 {
 			if pw.avgTime > 0 {
 				// Use historical average if available
-				estimatedMsg = fmt.Sprintf(" (⏱️ Est. %.1f min based on history)", pw.avgTime.Minutes())
+				estimatedMsg = fmt.Sprintf(" (⏱️ Est. %s based on history)", utils.FormatDuration(pw.avgTime))
 			} else {
 				// Calculate based on current progress and speed
 				remaining := float64(pw.total-pw.downloaded) / (speed * 1024 * 1024) // seconds
-				estimatedMsg = fmt.Sprintf(" (⏱️ Est. %.1f min remaining at %.1f MB/s)", remaining/60, speed)
+				remainingDuration := time.Duration(remaining) * time.Second
+				estimatedMsg = fmt.Sprintf(" (⏱️ Est. %s remaining at %.1f MB/s)", utils.FormatDuration(remainingDuration), speed)
 			}
 		}
 
@@ -128,6 +129,7 @@ func ensureWritable(path string) error {
 
 var exportCopyPairs []string // --copy source:destination
 var exportUploadReleaseMetadata bool
+var allowDestroy bool
 
 var exportCmd = &cobra.Command{
 	Use:   "export",
@@ -223,7 +225,7 @@ var exportCmd = &cobra.Command{
 		avgTime := getHistoricalDeploymentTime(client, auth, environment)
 		var timeEstimateMsg string
 		if avgTime > 0 {
-			timeEstimateMsg = fmt.Sprintf(" (⏱️ Est. %.1f minutes based on last 10 exports)", avgTime.Minutes())
+			timeEstimateMsg = fmt.Sprintf(" (⏱️ Est. %s based on last 10 exports)", utils.FormatDuration(avgTime))
 		}
 
 		// 1. Check for running TERRAFORM_EXPORT deployments
@@ -299,7 +301,9 @@ var exportCmd = &cobra.Command{
 			if deploymentStatus.Payload.Status == "SUCCEEDED" || deploymentStatus.Payload.Status == "FAILED" {
 				if deploymentStatus.Payload.Status == "FAILED" {
 					s.Fail("❌ Terraform export failed")
-					fmt.Printf("🔴 Terraform export failed: %v\n", deploymentStatus.Payload)
+					for _, log := range deploymentStatus.Payload.ErrorLogs {
+						fmt.Printf("🔴 Error logs : %v,", log.ErrorMessage)
+					}
 					return
 				}
 				break
@@ -309,7 +313,7 @@ var exportCmd = &cobra.Command{
 				if avgTime > 0 {
 					remaining := avgTime - elapsed
 					if remaining > 0 {
-						remainingMsg = fmt.Sprintf(" (⏱️ Est. %.1f min remaining)", remaining.Minutes())
+						remainingMsg = fmt.Sprintf(" (⏱️ Est. %s remaining)", utils.FormatDuration(remaining))
 					}
 				}
 				s.UpdateMessage("⚡ Terraform export in progress..." + remainingMsg)
@@ -507,6 +511,9 @@ var exportCmd = &cobra.Command{
 			if exportUploadReleaseMetadata {
 				applyCmd.Flags().Set("upload-release-metadata", "true")
 			}
+			if allowDestroy {
+				applyCmd.Flags().Set("allow-destroy", "true")
+			}
 			err := runApply(applyCmd, []string{})
 			if err != nil {
 				fmt.Printf("❌ Error during apply: %v\n", err)
@@ -518,6 +525,9 @@ var exportCmd = &cobra.Command{
 			if exportUploadReleaseMetadata {
 				planCmd.Flags().Set("upload-release-metadata", "true")
 			}
+			if allowDestroy {
+				planCmd.Flags().Set("allow-destroy", "true")
+			}
 			err := runPlan(planCmd, []string{})
 			if err != nil {
 				fmt.Printf("❌ Error during plan: %v\n", err)
@@ -528,6 +538,9 @@ var exportCmd = &cobra.Command{
 			destroyCmd.Flags().Set("zip", filename)
 			if exportUploadReleaseMetadata {
 				destroyCmd.Flags().Set("upload-release-metadata", "true")
+			}
+			if allowDestroy {
+				destroyCmd.Flags().Set("allow-destroy", "true")
 			}
 			err := runDestroy(destroyCmd, []string{})
 			if err != nil {

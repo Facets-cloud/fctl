@@ -136,12 +136,6 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		if err := utils.FixPermissions(tfWorkDir); err != nil {
 			return fmt.Errorf("❌ Failed to fix permissions: %v", err)
 		}
-		if allowDestroy {
-			fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
-			if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
-				return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
-			}
-		}
 	} else {
 		fmt.Println("♻️ Using existing deployment directory")
 		// Check if zip contents differ from deployDir
@@ -158,14 +152,15 @@ func runPlan(cmd *cobra.Command, args []string) error {
 			if err := utils.FixPermissions(tfWorkDir); err != nil {
 				return fmt.Errorf("❌ Failed to fix permissions: %v", err)
 			}
-			if allowDestroy {
-				fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
-				if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
-					return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
-				}
-			}
 		} else {
 			fmt.Println("✅ No changes detected in zip, skipping extraction.")
+		}
+	}
+
+	if allowDestroy {
+		fmt.Println("🔒 Enforcing prevent_destroy = true in all Terraform resources...")
+		if err := utils.UpdatePreventDestroyInTFs(tfWorkDir); err != nil {
+			return fmt.Errorf("❌ Failed to update prevent_destroy in .tf files: %v", err)
 		}
 	}
 

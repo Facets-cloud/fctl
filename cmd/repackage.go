@@ -94,7 +94,7 @@ func runRepackage(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("invalid --copy value: %s (source and destination required)", pair)
 		}
 		destPath := filepath.Join(tempDir, dest)
-		s.UpdateMessage(fmt.Sprintf("\U0001F4C4 Copying %s to %s inside zip structure...", source, dest))
+		s.UpdateMessage("📄 Copying files to zip structure...")
 		srcInfo, err := os.Stat(source)
 		if err != nil {
 			s.Fail(fmt.Sprintf("❌ Failed to stat source: %s", source))
