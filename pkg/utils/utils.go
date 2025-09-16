@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,8 +16,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"crypto/sha256"
 
 	"github.com/go-ini/ini"
 	"github.com/hashicorp/hcl/v2"
@@ -694,6 +693,335 @@ func FormatDuration(d time.Duration) string {
 	return strings.Join(parts, "")
 }
 
+// cleanupTerraformFiles removes unused code and references from .tf files using HCL parsing
+func cleanupTerraformFiles(dir string) error {
+	// Walk through all subdirectories looking for .tf files
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		
+		// Only process .tf files (not .tfstate or .tf.json)
+		if !strings.HasSuffix(path, ".tf") || strings.HasSuffix(path, ".tf.json") {
+			return nil
+		}
+		
+		filename := filepath.Base(path)
+		
+		// Read the file
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		
+		// Parse the HCL file
+		file, diags := hclwrite.ParseConfig(content, path, hcl.Pos{Line: 1, Column: 1})
+		if diags.HasErrors() {
+			// If HCL parsing fails, skip this file
+			fmt.Printf("  ⚠️  Could not parse %s as HCL, skipping: %v\n", path, diags)
+			return nil
+		}
+		
+		modified := false
+		rootBody := file.Body()
+		
+		// Handle specific files
+		switch filename {
+		case "main.tf":
+			isLevel2 := strings.Contains(path, "level2")
+			
+			if isLevel2 {
+				// In level2/main.tf, clean up module blocks that reference removed variables
+				for _, block := range rootBody.Blocks() {
+					if block.Type() == "module" {
+						blockBody := block.Body()
+						moduleName := ""
+						if len(block.Labels()) > 0 {
+							moduleName = block.Labels()[0]
+						}
+						
+						// Skip cleaning blueprint_self module - it's required
+						if moduleName == "blueprint_self" {
+							continue
+						}
+						
+						// For all modules in level2/main.tf (except blueprint_self)
+						// Keep cluster attribute but we may need to update how it's referenced
+						// since var.cluster won't exist anymore
+						
+						// Remove unnecessary attributes (these match the removed variables)
+						attributesToClean := []string{
+							"instance_type", "iac_version", 
+							"release_metadata", "generate_release_metadata",
+							"baseinfra", "settings",
+						}
+						// Note: keeping "instance", "advanced", "inputs", "environment" as they may be needed
+						
+						for _, attrName := range attributesToClean {
+							if blockBody.GetAttribute(attrName) != nil {
+								blockBody.RemoveAttribute(attrName)
+								modified = true
+							}
+						}
+						
+						// Clean up empty providers and inputs blocks
+						if attr := blockBody.GetAttribute("providers"); attr != nil {
+							tokens := attr.Expr().BuildTokens(nil)
+							if len(tokens) <= 3 {
+								blockBody.RemoveAttribute("providers")
+								modified = true
+							}
+						}
+						
+						if attr := blockBody.GetAttribute("inputs"); attr != nil {
+							// Check if inputs only contains deployment_id
+							tokens := attr.Expr().BuildTokens(nil)
+							removeInputs := false
+							for _, token := range tokens {
+								if string(token.Bytes) == "deployment_id" {
+									removeInputs = true
+									break
+								}
+							}
+							if removeInputs || len(tokens) <= 3 {
+								blockBody.RemoveAttribute("inputs")
+								modified = true
+							}
+						}
+						
+						fmt.Printf("    - Cleaning module: %s\n", moduleName)
+					}
+				}
+				
+				// DO NOT touch module blueprint_self - it's required
+				
+			} else {
+				// Root main.tf cleanup
+				// Clean up module "level2" block
+				for _, block := range rootBody.Blocks() {
+					if block.Type() == "module" && len(block.Labels()) > 0 && block.Labels()[0] == "level2" {
+						// Remove cc_metadata attribute
+						if block.Body().GetAttribute("cc_metadata") != nil {
+							block.Body().RemoveAttribute("cc_metadata")
+							modified = true
+						}
+						// Remove deployment_id if it references var.deployment_id
+						if attr := block.Body().GetAttribute("deployment_id"); attr != nil {
+							block.Body().RemoveAttribute("deployment_id")
+							modified = true
+						}
+						// Remove empty providers block
+						if attr := block.Body().GetAttribute("providers"); attr != nil {
+							tokens := attr.Expr().BuildTokens(nil)
+							if len(tokens) <= 3 {
+								block.Body().RemoveAttribute("providers")
+								modified = true
+							}
+						}
+						// Remove state attribute if it's empty
+						if attr := block.Body().GetAttribute("state"); attr != nil {
+							tokens := attr.Expr().BuildTokens(nil)
+							if len(tokens) <= 3 {
+								block.Body().RemoveAttribute("state")
+								modified = true
+							}
+						}
+					}
+				}
+				
+				// Remove variable blocks for deployment_id, dev_mode, releaseType
+				blocksToRemove := []string{}
+				for _, block := range rootBody.Blocks() {
+					if block.Type() == "variable" && len(block.Labels()) > 0 {
+						varName := block.Labels()[0]
+						if varName == "deployment_id" || varName == "dev_mode" || varName == "releaseType" {
+							blocksToRemove = append(blocksToRemove, varName)
+						}
+					}
+				}
+				for _, varName := range blocksToRemove {
+					for _, block := range rootBody.Blocks() {
+						if block.Type() == "variable" && len(block.Labels()) > 0 && block.Labels()[0] == varName {
+							rootBody.RemoveBlock(block)
+							modified = true
+							break
+						}
+					}
+				}
+			}
+			
+		case "variables.tf":
+			// Remove Facets-specific variables
+			// Check directory context
+			isLevel2 := strings.Contains(path, "level2")
+			isModule := strings.Contains(path, "/modules/")
+			
+			blocksToRemove := []string{}
+			for _, block := range rootBody.Blocks() {
+				if block.Type() == "variable" && len(block.Labels()) > 0 {
+					varName := block.Labels()[0]
+					shouldRemove := false
+					
+					// Variables to remove from module directories (modules/*/variables.tf)
+					if isModule {
+						// Remove Facets-specific variables from modules
+						if varName == "release_metadata" ||
+						   varName == "instance_type" ||
+						   varName == "iac_version" ||
+						   varName == "generate_release_metadata" ||
+						   varName == "settings" ||
+						   varName == "baseinfra" ||
+						   varName == "cc_metadata" {
+							shouldRemove = true
+						}
+						// Keep: cluster, instance, advanced, inputs, environment, instance_name
+					} else if isLevel2 {
+						// Additional variables to remove in level2/variables.tf
+						if varName == "infra_output" || 
+						   varName == "settings" || 
+						   varName == "state" ||
+						   varName == "cc_metadata" ||
+						   varName == "deployment_id" {
+							shouldRemove = true
+						}
+					} else {
+						// Common variables to remove from tfexport/variables.tf
+						if strings.HasPrefix(varName, "cc_") || 
+						   varName == "deployment_id" || 
+						   varName == "dev_mode" || 
+						   varName == "releaseType" ||
+						   varName == "CUSTOMER_ARTIFACT_BUCKET" ||
+						   varName == "USE_MINIO" {
+							shouldRemove = true
+						}
+					}
+					
+					if shouldRemove {
+						blocksToRemove = append(blocksToRemove, varName)
+					}
+				}
+			}
+			for _, varName := range blocksToRemove {
+				for _, block := range rootBody.Blocks() {
+					if block.Type() == "variable" && len(block.Labels()) > 0 && block.Labels()[0] == varName {
+						rootBody.RemoveBlock(block)
+						modified = true
+						break
+					}
+				}
+			}
+			
+		case "cc_metadata.tf":
+			// Remove all content
+			rootBody.Clear()
+			modified = true
+			
+		case "outputs.tf":
+			// Remove outputs that reference cc_metadata or deployment_id
+			outputsToRemove := []string{}
+			for _, block := range rootBody.Blocks() {
+				if block.Type() == "output" && len(block.Labels()) > 0 {
+					outputName := block.Labels()[0]
+					valueAttr := block.Body().GetAttribute("value")
+					if valueAttr != nil {
+						// Check if value contains references to removed variables
+						tokens := valueAttr.Expr().BuildTokens(nil)
+						for _, token := range tokens {
+							tokenStr := string(token.Bytes)
+							// List of removed variables to check for
+							removedVars := []string{"cc_metadata", "deployment_id", "release_metadata", 
+								"generate_release_metadata", "baseinfra", "settings", "infra_output", "state"}
+							
+							for _, removedVar := range removedVars {
+								if strings.Contains(tokenStr, removedVar) {
+									outputsToRemove = append(outputsToRemove, outputName)
+									fmt.Printf("    - Output '%s' references %s, will remove\n", outputName, removedVar)
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+			// Remove outputs that reference cc_metadata
+			for _, outputName := range outputsToRemove {
+				for _, block := range rootBody.Blocks() {
+					if block.Type() == "output" && len(block.Labels()) > 0 && block.Labels()[0] == outputName {
+						rootBody.RemoveBlock(block)
+						modified = true
+						fmt.Printf("    - Removed output: %s\n", outputName)
+						break
+					}
+				}
+			}
+		}
+		
+		// General cleanup for all .tf files
+		// Remove cc_metadata attributes from any block
+		for _, block := range rootBody.Blocks() {
+			blockBody := block.Body()
+			
+			// Remove cc_metadata attribute
+			if blockBody.GetAttribute("cc_metadata") != nil {
+				blockBody.RemoveAttribute("cc_metadata")
+				modified = true
+			}
+			
+			// Remove other Facets-specific attributes from module blocks
+			if block.Type() == "module" {
+				// Remove these attributes if they exist
+				attributesToRemove := []string{
+					"settings", "state", "infra_output", "deployment_id",
+					"release_metadata", "instance_type",
+					"iac_version", "generate_release_metadata", "baseinfra", "cc_metadata",
+				}
+				for _, attrName := range attributesToRemove {
+					if blockBody.GetAttribute(attrName) != nil {
+						blockBody.RemoveAttribute(attrName)
+						modified = true
+						if len(block.Labels()) > 0 {
+							fmt.Printf("    - Removing attribute '%s' from module '%s'\n", attrName, block.Labels()[0])
+						}
+					}
+				}
+			}
+		}
+		
+		// Write back if modified
+		if modified {
+			newContent := file.Bytes()
+			
+			// Check if the file is now effectively empty (only whitespace/comments)
+			isEmpty := true
+			// Check if there are any blocks or attributes left
+			if len(rootBody.Blocks()) > 0 {
+				isEmpty = false
+			}
+			for _, attr := range rootBody.Attributes() {
+				if attr != nil {
+					isEmpty = false
+					break
+				}
+			}
+			
+			// If file is empty, delete it instead of writing empty content
+			if isEmpty {
+				fmt.Printf("  🗑️  Deleting empty file: %s\n", path)
+				if err := os.Remove(path); err != nil {
+					return fmt.Errorf("failed to delete empty file %s: %w", path, err)
+				}
+			} else {
+				// Write the modified content
+				if err := os.WriteFile(path, newContent, 0644); err != nil {
+					return fmt.Errorf("failed to write cleaned file %s: %w", path, err)
+				}
+			}
+		}
+		
+		return nil
+	})
+}
+
 // CleanExportedFiles removes unwanted files and cleans JSON files in the exported directory
 func CleanExportedFiles(rootDir string) error {
 	// 1. Remove all facets.yaml and resources_gen.tf files from modules/ directory recursively
@@ -728,10 +1056,26 @@ func CleanExportedFiles(rootDir string) error {
 		}
 	}
 
-	// 3. Clean scratch_string resources from downloaded-terraform.tfstate
+	// 3. Clean up terraform files in tfexport and modules directories
+	// Clean tfexport directory
+	tfexportDir := filepath.Join(rootDir, "tfexport")
+	if _, err := os.Stat(tfexportDir); err == nil {
+		if err := cleanupTerraformFiles(tfexportDir); err != nil {
+			fmt.Printf("  ⚠️  Error cleaning tfexport directory: %v\n", err)
+		}
+	}
+	
+	// Clean modules directory
+	modulesPath := filepath.Join(rootDir, "modules")
+	if _, err := os.Stat(modulesPath); err == nil {
+		if err := cleanupTerraformFiles(modulesPath); err != nil {
+			fmt.Printf("  ⚠️  Error cleaning modules directory: %v\n", err)
+		}
+	}
+
+	// 4. Clean scratch_string resources from downloaded-terraform.tfstate
 	tfstatePath := filepath.Join(rootDir, "tfexport", "downloaded-terraform.tfstate")
 	if _, err := os.Stat(tfstatePath); err == nil {
-		fmt.Printf("🔧 Cleaning scratch_string resources from: %s\n", tfstatePath)
 		
 		// Read the tfstate file
 		data, err := os.ReadFile(tfstatePath)
@@ -833,7 +1177,7 @@ func CleanExportedFiles(rootDir string) error {
 		}
 	}
 
-	// 4. Process input_*.tf.json files in tfexport/level2 to remove flavor, version, and kind
+	// 5. Process input_*.tf.json files in tfexport/level2 to remove flavor, version, and kind
 	level2Dir := filepath.Join(rootDir, "tfexport", "level2")
 	if _, err := os.Stat(level2Dir); err == nil {
 		entries, err := os.ReadDir(level2Dir)
@@ -884,7 +1228,6 @@ func CleanExportedFiles(rootDir string) error {
 				
 				// Write back if modified
 				if modified {
-					fmt.Printf("🔧 Cleaning JSON fields from: %s\n", jsonPath)
 					updatedData, err := json.MarshalIndent(jsonData, "", "  ")
 					if err != nil {
 						return fmt.Errorf("failed to marshal %s: %w", jsonPath, err)
