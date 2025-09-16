@@ -696,7 +696,7 @@ func FormatDuration(d time.Duration) string {
 
 // CleanExportedFiles removes unwanted files and cleans JSON files in the exported directory
 func CleanExportedFiles(rootDir string) error {
-	// 1. Remove all facets.yaml and resource_gen.tf files from modules/ directory recursively
+	// 1. Remove all facets.yaml and resources_gen.tf files from modules/ directory recursively
 	modulesDir := filepath.Join(rootDir, "modules")
 	if _, err := os.Stat(modulesDir); err == nil {
 		err := filepath.Walk(modulesDir, func(path string, info os.FileInfo, err error) error {
@@ -719,7 +719,121 @@ func CleanExportedFiles(rootDir string) error {
 		}
 	}
 
-	// 2. Process input_*.tf.json files in tfexport/level2 to remove flavor, version, and kind
+	// 2. Remove terraform.d directory from tfexport
+	terraformDDir := filepath.Join(rootDir, "tfexport", "terraform.d")
+	if _, err := os.Stat(terraformDDir); err == nil {
+		fmt.Printf("🗑️  Removing directory: %s\n", terraformDDir)
+		if err := os.RemoveAll(terraformDDir); err != nil {
+			return fmt.Errorf("failed to remove terraform.d directory: %w", err)
+		}
+	}
+
+	// 3. Clean scratch_string resources from downloaded-terraform.tfstate
+	tfstatePath := filepath.Join(rootDir, "tfexport", "downloaded-terraform.tfstate")
+	if _, err := os.Stat(tfstatePath); err == nil {
+		fmt.Printf("🔧 Cleaning scratch_string resources from: %s\n", tfstatePath)
+		
+		// Read the tfstate file
+		data, err := os.ReadFile(tfstatePath)
+		if err != nil {
+			return fmt.Errorf("failed to read tfstate file: %w", err)
+		}
+		
+		// Parse as raw JSON to handle any format
+		var rawState map[string]interface{}
+		if err := json.Unmarshal(data, &rawState); err != nil {
+			return fmt.Errorf("failed to parse tfstate as JSON: %w", err)
+		}
+		
+		modified := false
+		removedCount := 0
+		
+		// Add version if missing
+		if _, hasVersion := rawState["version"]; !hasVersion {
+			fmt.Printf("  ⚠️  State file missing version, adding version 4\n")
+			rawState["version"] = 4
+			if _, hasTfVersion := rawState["terraform_version"]; !hasTfVersion {
+				rawState["terraform_version"] = "1.5.7"
+			}
+			modified = true
+		}
+		
+		// Process resources array directly (the format from your state list output)
+		if resources, ok := rawState["resources"].([]interface{}); ok {
+			var filteredResources []interface{}
+			
+			// First pass: identify and remove scratch_string resources
+			for _, res := range resources {
+				if resMap, ok := res.(map[string]interface{}); ok {
+					resType, _ := resMap["type"].(string)
+					resName, _ := resMap["name"].(string) 
+					resModule, _ := resMap["module"].(string)
+					
+					if resType == "scratch_string" || resType == "scratch_number" {
+						if resModule != "" {
+							fmt.Printf("  - Removing %s resource from %s: %s\n", resType, resModule, resName)
+						} else {
+							fmt.Printf("  - Removing %s resource: %s\n", resType, resName)
+						}
+						removedCount++
+						modified = true
+						continue
+					}
+					
+					// For remaining resources, clean up dependencies
+					if instances, ok := resMap["instances"].([]interface{}); ok {
+						for _, inst := range instances {
+							if instMap, ok := inst.(map[string]interface{}); ok {
+								if deps, ok := instMap["dependencies"].([]interface{}); ok {
+									var cleanedDeps []interface{}
+									for _, dep := range deps {
+										depStr, _ := dep.(string)
+										// Check if this dependency is a scratch_string resource
+										isScratch := false
+										if strings.Contains(depStr, "scratch_string") || strings.Contains(depStr, "scratch_number") {
+											isScratch = true
+										}
+										if !isScratch {
+											cleanedDeps = append(cleanedDeps, dep)
+										}
+									}
+									if len(cleanedDeps) != len(deps) {
+										instMap["dependencies"] = cleanedDeps
+										modified = true
+									}
+								}
+							}
+						}
+					}
+					
+					filteredResources = append(filteredResources, res)
+				}
+			}
+			
+			rawState["resources"] = filteredResources
+			
+			if removedCount > 0 {
+				fmt.Printf("  ✓ Removed %d scratch_string/scratch_number resource(s)\n", removedCount)
+			} else {
+				fmt.Printf("  ✓ No scratch_string resources found\n")
+			}
+		} else {
+			fmt.Printf("  ⚠️  State file doesn't have resources array in expected format\n")
+		}
+		
+		// Write back if modified
+		if modified {
+			updatedData, err := json.MarshalIndent(rawState, "", "  ")
+			if err != nil {
+				return fmt.Errorf("failed to marshal cleaned state: %w", err)
+			}
+			if err := os.WriteFile(tfstatePath, updatedData, 0644); err != nil {
+				return fmt.Errorf("failed to write cleaned state: %w", err)
+			}
+		}
+	}
+
+	// 4. Process input_*.tf.json files in tfexport/level2 to remove flavor, version, and kind
 	level2Dir := filepath.Join(rootDir, "tfexport", "level2")
 	if _, err := os.Stat(level2Dir); err == nil {
 		entries, err := os.ReadDir(level2Dir)
