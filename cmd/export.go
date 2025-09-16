@@ -386,26 +386,37 @@ var exportCmd = &cobra.Command{
 			return
 		}
 
-		// If include-providers is set, extract the zip to a temp directory
+		// Always clean the exported files and optionally include providers
+		// This requires extracting, processing, and re-zipping
+		tempDir, err := os.MkdirTemp("", "fctl-export-process-*")
+		if err != nil {
+			s.Fail("❌ Could not create temp directory: " + err.Error())
+			return
+		}
+		defer os.RemoveAll(tempDir)
+
+		s.UpdateMessage("📦 Processing exported files...")
+		if err := utils.ExtractZip(zipFilePath, tempDir); err != nil {
+			s.Fail("❌ Could not extract zip: " + err.Error())
+			return
+		}
+
+		// Ensure all files/dirs are writable
+		if err := ensureWritable(tempDir); err != nil {
+			s.Fail("❌ Could not set permissions: " + err.Error())
+			return
+		}
+
+		// Clean the extracted files (remove facets.yaml, resource_gen.tf, and clean JSON files)
+		s.UpdateMessage("🧹 Cleaning exported files...")
+		if err := utils.CleanExportedFiles(tempDir); err != nil {
+			s.Fail("❌ Error cleaning exported files: " + err.Error())
+			return
+		}
+
+		// If include-providers is set, run terraform init
 		if includeProviders {
-			tempDir, err := os.MkdirTemp("", "fctl-tfexport-*")
-			if err != nil {
-				s.Fail("❌ Could not create temp directory: " + err.Error())
-				return
-			}
-			defer os.RemoveAll(tempDir)
-
-			if err := utils.ExtractZip(zipFilePath, tempDir); err != nil {
-				s.Fail("❌ Could not extract zip: " + err.Error())
-				return
-			}
-
-			// Ensure all files/dirs are writable by the user
-			if err := ensureWritable(tempDir); err != nil {
-				s.Fail("❌ Could not set permissions: " + err.Error())
-				return
-			}
-
+			s.UpdateMessage("🔧 Including Terraform providers...")
 			// Run 'terraform init' in tempDir using terraform-exec
 			tf, err := tfexec.NewTerraform(fmt.Sprintf("%s/tfexport", tempDir), "terraform")
 			if err != nil {
@@ -418,12 +429,12 @@ var exportCmd = &cobra.Command{
 				s.Fail("❌ 'terraform init' failed: " + err.Error())
 				return
 			}
+		}
 
-			// Re-zip the directory, replacing the original zip
-			if err := utils.ZipDir(tempDir, zipFilePath); err != nil {
-				s.Fail("❌ Could not re-zip directory: " + err.Error())
-				return
-			}
+		// Re-zip the cleaned (and optionally provider-included) directory
+		if err := utils.ZipDir(tempDir, zipFilePath); err != nil {
+			s.Fail("❌ Could not re-zip directory: " + err.Error())
+			return
 		}
 
 		// If --copy is set, extract zip, copy files, and re-zip

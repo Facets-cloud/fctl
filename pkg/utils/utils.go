@@ -693,3 +693,95 @@ func FormatDuration(d time.Duration) string {
 
 	return strings.Join(parts, "")
 }
+
+// CleanExportedFiles removes unwanted files and cleans JSON files in the exported directory
+func CleanExportedFiles(rootDir string) error {
+	// 1. Remove all facets.yaml and resource_gen.tf files from modules/ directory recursively
+	modulesDir := filepath.Join(rootDir, "modules")
+	if _, err := os.Stat(modulesDir); err == nil {
+		err := filepath.Walk(modulesDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() {
+				filename := filepath.Base(path)
+				if filename == "facets.yaml" || filename == "resources_gen.tf" {
+					fmt.Printf("🗑️  Removing: %s\n", path)
+					if err := os.Remove(path); err != nil {
+						return fmt.Errorf("failed to remove %s: %w", path, err)
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("error cleaning modules directory: %w", err)
+		}
+	}
+
+	// 2. Process input_*.tf.json files in tfexport/level2 to remove flavor, version, and kind
+	level2Dir := filepath.Join(rootDir, "tfexport", "level2")
+	if _, err := os.Stat(level2Dir); err == nil {
+		entries, err := os.ReadDir(level2Dir)
+		if err != nil {
+			return fmt.Errorf("failed to read level2 directory: %w", err)
+		}
+		
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasPrefix(entry.Name(), "input_") && strings.HasSuffix(entry.Name(), ".tf.json") {
+				jsonPath := filepath.Join(level2Dir, entry.Name())
+				
+				// Read the JSON file
+				data, err := os.ReadFile(jsonPath)
+				if err != nil {
+					return fmt.Errorf("failed to read %s: %w", jsonPath, err)
+				}
+				
+				// Parse JSON
+				var jsonData map[string]interface{}
+				if err := json.Unmarshal(data, &jsonData); err != nil {
+					return fmt.Errorf("failed to parse %s: %w", jsonPath, err)
+				}
+				
+				// Navigate through the structure: locals -> input_* -> remove fields
+				modified := false
+				if locals, ok := jsonData["locals"].(map[string]interface{}); ok {
+					// Iterate through all keys in locals (there should be one matching input_*)
+					for key, value := range locals {
+						if strings.HasPrefix(key, "input_") {
+							if inputData, ok := value.(map[string]interface{}); ok {
+								// Remove flavor, version, and kind fields
+								if _, exists := inputData["flavor"]; exists {
+									delete(inputData, "flavor")
+									modified = true
+								}
+								if _, exists := inputData["version"]; exists {
+									delete(inputData, "version")
+									modified = true
+								}
+								if _, exists := inputData["kind"]; exists {
+									delete(inputData, "kind")
+									modified = true
+								}
+							}
+						}
+					}
+				}
+				
+				// Write back if modified
+				if modified {
+					fmt.Printf("🔧 Cleaning JSON fields from: %s\n", jsonPath)
+					updatedData, err := json.MarshalIndent(jsonData, "", "  ")
+					if err != nil {
+						return fmt.Errorf("failed to marshal %s: %w", jsonPath, err)
+					}
+					if err := os.WriteFile(jsonPath, updatedData, 0644); err != nil {
+						return fmt.Errorf("failed to write %s: %w", jsonPath, err)
+					}
+				}
+			}
+		}
+	}
+	
+	return nil
+}
