@@ -1056,7 +1056,16 @@ func CleanExportedFiles(rootDir string) error {
 		}
 	}
 
-	// 3. Clean up terraform files in tfexport and modules directories
+	// 3. Remove outputs.tf from tfexport directory
+	outputsTfPath := filepath.Join(rootDir, "tfexport", "outputs.tf")
+	if _, err := os.Stat(outputsTfPath); err == nil {
+		fmt.Printf("🗑️  Removing: %s\n", outputsTfPath)
+		if err := os.Remove(outputsTfPath); err != nil {
+			fmt.Printf("  ⚠️  Failed to remove outputs.tf: %v\n", err)
+		}
+	}
+	
+	// 4. Clean up terraform files in tfexport and modules directories
 	// Clean tfexport directory
 	tfexportDir := filepath.Join(rootDir, "tfexport")
 	if _, err := os.Stat(tfexportDir); err == nil {
@@ -1073,7 +1082,7 @@ func CleanExportedFiles(rootDir string) error {
 		}
 	}
 
-	// 4. Clean scratch_string resources from downloaded-terraform.tfstate
+	// 5. Clean scratch_string resources from downloaded-terraform.tfstate
 	tfstatePath := filepath.Join(rootDir, "tfexport", "downloaded-terraform.tfstate")
 	if _, err := os.Stat(tfstatePath); err == nil {
 		
