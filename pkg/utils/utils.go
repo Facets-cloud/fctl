@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-ini/ini"
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/hashicorp/terraform-config-inspect/tfconfig"
 	"github.com/hashicorp/terraform-exec/tfexec"
@@ -694,6 +695,344 @@ func FormatDuration(d time.Duration) string {
 }
 
 // cleanupTerraformFiles removes unused code and references from .tf files using HCL parsing
+func fixModuleVariables(modulesDir string) error {
+	// Walk through modules directory to find all variables.tf files
+	return filepath.Walk(modulesDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		
+		// Only process variables.tf files
+		if info.IsDir() || filepath.Base(path) != "variables.tf" {
+			return nil
+		}
+		
+		fmt.Printf("  📝 Checking variables.tf: %s\n", path)
+		
+		// Read the file
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read %s: %w", path, err)
+		}
+		
+		// Parse the HCL file
+		file, diags := hclwrite.ParseConfig(content, path, hcl.Pos{Line: 1, Column: 1})
+		if diags.HasErrors() {
+			fmt.Printf("    ⚠️  Could not parse %s as HCL: %v\n", path, diags)
+			return nil
+		}
+		
+		rootBody := file.Body()
+		
+		// Required variables with their types
+		requiredVars := map[string]string{
+			"instance":      "object",
+			"instance_name": "string", 
+			"cluster":       "object",
+			"environment":   "object",
+			"inputs":        "object",
+		}
+		
+		// Check which variables already exist
+		existingVars := make(map[string]bool)
+		for _, block := range rootBody.Blocks() {
+			if block.Type() == "variable" && len(block.Labels()) > 0 {
+				varName := block.Labels()[0]
+				existingVars[varName] = true
+			}
+		}
+		
+		// Add missing required variables
+		modified := false
+		for varName, varType := range requiredVars {
+			if !existingVars[varName] {
+				fmt.Printf("    ➕ Adding missing variable: %s (%s)\n", varName, varType)
+				
+				// Add a newline before the new block if there are existing blocks
+				if len(rootBody.Blocks()) > 0 {
+					rootBody.AppendNewline()
+				}
+				
+				// Create new variable block
+				varBlock := rootBody.AppendNewBlock("variable", []string{varName})
+				varBody := varBlock.Body()
+				
+				// Set type and description based on variable
+				switch varName {
+				case "instance":
+					varBody.SetAttributeRaw("type", hclwrite.TokensForIdentifier("object({})"))
+					varBody.SetAttributeValue("description", cty.StringVal("Instance configuration"))
+					varBody.SetAttributeRaw("default", hclwrite.TokensForIdentifier("{}"))
+				case "instance_name":
+					varBody.SetAttributeRaw("type", hclwrite.TokensForIdentifier("string"))
+					varBody.SetAttributeValue("description", cty.StringVal("Name of the instance"))
+					varBody.SetAttributeValue("default", cty.StringVal(""))
+				case "cluster":
+					varBody.SetAttributeRaw("type", hclwrite.TokensForIdentifier("object({})"))
+					varBody.SetAttributeValue("description", cty.StringVal("Cluster identifier"))
+					varBody.SetAttributeRaw("default", hclwrite.TokensForIdentifier("{}"))
+				case "environment":
+					varBody.SetAttributeRaw("type", hclwrite.TokensForIdentifier("object({})"))
+					varBody.SetAttributeValue("description", cty.StringVal("Environment name"))
+					varBody.SetAttributeRaw("default", hclwrite.TokensForIdentifier("{}"))
+				case "inputs":
+					varBody.SetAttributeRaw("type", hclwrite.TokensForIdentifier("object({})"))
+					varBody.SetAttributeValue("description", cty.StringVal("Inputs"))
+					varBody.SetAttributeRaw("default", hclwrite.TokensForIdentifier("{}"))
+				}
+				
+				modified = true
+			}
+		}
+		
+		// Write back if modified
+		if modified {
+			// Ensure the file ends with a newline
+			output := file.Bytes()
+			if len(output) > 0 && output[len(output)-1] != '\n' {
+				output = append(output, '\n')
+			}
+			
+			if err := os.WriteFile(path, output, 0644); err != nil {
+				return fmt.Errorf("failed to write %s: %w", path, err)
+			}
+			fmt.Printf("    ✅ Updated variables.tf\n")
+		} else {
+			fmt.Printf("    ✅ All required variables present\n")
+		}
+		
+		return nil
+	})
+}
+
+func fixLevel2MainTf(mainTfPath string) error {
+	// Check if file exists
+	if _, err := os.Stat(mainTfPath); os.IsNotExist(err) {
+		fmt.Printf("  ⚠️  Level2 main.tf not found: %s\n", mainTfPath)
+		return nil
+	}
+	
+	fmt.Printf("  📝 Processing: %s\n", mainTfPath)
+	
+	// Read the file
+	content, err := os.ReadFile(mainTfPath)
+	if err != nil {
+		return fmt.Errorf("failed to read main.tf: %w", err)
+	}
+	
+	// Parse the HCL file
+	file, diags := hclwrite.ParseConfig(content, mainTfPath, hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return fmt.Errorf("failed to parse main.tf: %v", diags)
+	}
+	
+	rootBody := file.Body()
+	modified := false
+	
+	// Process all module blocks
+	for _, block := range rootBody.Blocks() {
+		if block.Type() != "module" {
+			continue
+		}
+		
+		moduleName := ""
+		if len(block.Labels()) > 0 {
+			moduleName = block.Labels()[0]
+		}
+		
+		// Skip blueprint_self and environment modules
+		if moduleName == "blueprint_self" || moduleName == "environment" {
+			fmt.Printf("    ⏭️  Skipping special module: %s\n", moduleName)
+			continue
+		}
+		
+		fmt.Printf("    🔍 Checking module: %s\n", moduleName)
+		blockBody := block.Body()
+		
+		// Allowed attributes for modules (except blueprint_self and environment)
+		allowedAttrs := map[string]bool{
+			"source":        true,
+			"inputs":        true,
+			"instance":      true,
+			"instance_name": true,
+			"cluster":       true,
+			"environment":   true,
+		}
+		
+		// Remove unwanted attributes
+		attrs := blockBody.Attributes()
+		for attrName := range attrs {
+			if !allowedAttrs[attrName] {
+				fmt.Printf("      🗑️  Removing unwanted attribute: %s\n", attrName)
+				blockBody.RemoveAttribute(attrName)
+				modified = true
+			}
+		}
+		
+		// Required module variables that should be present
+		requiredModuleVars := []string{
+			"inputs", "instance", "instance_name", "cluster", "environment",
+		}
+		
+		// Check which variables are present and add missing ones
+		for _, varName := range requiredModuleVars {
+			attr := blockBody.GetAttribute(varName)
+			if attr == nil {
+				fmt.Printf("      ➕ Adding missing attribute: %s\n", varName)
+				
+				// Add the missing variable with appropriate default value
+				switch varName {
+				case "inputs":
+					// Add empty object for inputs - this is always required
+					blockBody.SetAttributeRaw(varName, hclwrite.TokensForIdentifier("{}"))
+				case "instance":
+					// Add empty object for instance
+					blockBody.SetAttributeRaw(varName, hclwrite.TokensForIdentifier("{}"))
+				case "instance_name":
+					// Add empty string for instance_name
+					blockBody.SetAttributeValue(varName, cty.StringVal(""))
+				case "cluster":
+					// Reference var.cluster if it exists, otherwise empty object
+					blockBody.SetAttributeRaw(varName, hclwrite.TokensForIdentifier("var.cluster"))
+				case "environment":
+					// Reference var.environment if it exists, otherwise empty object
+					blockBody.SetAttributeRaw(varName, hclwrite.TokensForIdentifier("var.environment"))
+				}
+				
+				modified = true
+			} else {
+				fmt.Printf("      ✓ Attribute already present: %s\n", varName)
+			}
+		}
+	}
+	
+	// Write back if modified
+	if modified {
+		// Ensure the file ends with a newline
+		output := file.Bytes()
+		if len(output) > 0 && output[len(output)-1] != '\n' {
+			output = append(output, '\n')
+		}
+		
+		if err := os.WriteFile(mainTfPath, output, 0644); err != nil {
+			return fmt.Errorf("failed to write main.tf: %w", err)
+		}
+		fmt.Printf("  ✅ Updated level2 main.tf with required module variables\n")
+	} else {
+		fmt.Printf("  ✅ Level2 main.tf already has all required module variables\n")
+	}
+	
+	return nil
+}
+
+// Helper function to clean cc_metadata from cloud_tags output
+func cleanCloudTagsOutput(block *hclwrite.Block) bool {
+	valueAttr := block.Body().GetAttribute("value")
+	if valueAttr == nil {
+		return false
+	}
+	
+	// Get the raw tokens to check for cc_metadata
+	tokens := valueAttr.Expr().BuildTokens(nil)
+	
+	// Check if it contains cc_metadata
+	hasCC := false
+	for _, token := range tokens {
+		if strings.Contains(string(token.Bytes), "cc_metadata") {
+			hasCC = true
+			break
+		}
+	}
+	
+	if !hasCC {
+		return false
+	}
+	
+	// Create the cleaned expression without the cc_metadata line
+	// We preserve the merge structure but remove the facetscontrolplane line
+	cleanedExpr := `merge(lookup(local.spec, "enable_cloud_tags", true) ? {
+    cluster           = var.cluster.name
+    facetsclustername = var.cluster.name
+    facetsclusterid   = var.cluster.id
+  } : {}, lookup(local.spec, "cloud_tags", {}))`
+	
+	// Use TokensForTraversal to create proper tokens
+	// Since the expression is complex, we'll use raw tokens
+	block.Body().SetAttributeRaw("value", hclwrite.TokensForValue(cty.StringVal(cleanedExpr)))
+	
+	// Actually, we need to set it as an expression, not a string
+	// Let's use a simpler approach - set the raw tokens directly
+	block.Body().RemoveAttribute("value")
+	
+	// Add the attribute back with the new expression
+	_ = block.Body().SetAttributeRaw("value", hclwrite.Tokens{})
+	
+	// Build the tokens for the new expression manually
+	cleanedTokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("merge")},
+		{Type: hclsyntax.TokenOParen, Bytes: []byte("(")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("lookup")},
+		{Type: hclsyntax.TokenOParen, Bytes: []byte("(")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("local")},
+		{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("spec")},
+		{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+		{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(`"enable_cloud_tags"`)},
+		{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("true")},
+		{Type: hclsyntax.TokenCParen, Bytes: []byte(")")},
+		{Type: hclsyntax.TokenQuestion, Bytes: []byte("?")},
+		{Type: hclsyntax.TokenOBrace, Bytes: []byte("{")},
+		{Type: hclsyntax.TokenNewline, Bytes: []byte("\n    ")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("cluster")},
+		{Type: hclsyntax.TokenEqual, Bytes: []byte("=")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("var")},
+		{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("cluster")},
+		{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("name")},
+		{Type: hclsyntax.TokenNewline, Bytes: []byte("\n    ")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("facetsclustername")},
+		{Type: hclsyntax.TokenEqual, Bytes: []byte("=")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("var")},
+		{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("cluster")},
+		{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("name")},
+		{Type: hclsyntax.TokenNewline, Bytes: []byte("\n    ")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("facetsclusterid")},
+		{Type: hclsyntax.TokenEqual, Bytes: []byte("=")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("var")},
+		{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("cluster")},
+		{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("id")},
+		{Type: hclsyntax.TokenNewline, Bytes: []byte("\n  ")},
+		{Type: hclsyntax.TokenCBrace, Bytes: []byte("}")},
+		{Type: hclsyntax.TokenColon, Bytes: []byte(":")},
+		{Type: hclsyntax.TokenOBrace, Bytes: []byte("{")},
+		{Type: hclsyntax.TokenCBrace, Bytes: []byte("}")},
+		{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("lookup")},
+		{Type: hclsyntax.TokenOParen, Bytes: []byte("(")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("local")},
+		{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("spec")},
+		{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+		{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(`"cloud_tags"`)},
+		{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+		{Type: hclsyntax.TokenOBrace, Bytes: []byte("{")},
+		{Type: hclsyntax.TokenCBrace, Bytes: []byte("}")},
+		{Type: hclsyntax.TokenCParen, Bytes: []byte(")")},
+		{Type: hclsyntax.TokenCParen, Bytes: []byte(")")},
+	}
+	
+	// Set the new expression
+	block.Body().SetAttributeRaw("value", cleanedTokens)
+	
+	return true
+}
+
 func cleanupTerraformFiles(dir string) error {
 	// Walk through all subdirectories looking for .tf files
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -773,20 +1112,29 @@ func cleanupTerraformFiles(dir string) error {
 							}
 						}
 						
+						// Clean up inputs attribute but keep it (it's required)
 						if attr := blockBody.GetAttribute("inputs"); attr != nil {
-							// Check if inputs only contains deployment_id
+							// Check if inputs only contains deployment_id or is empty
 							tokens := attr.Expr().BuildTokens(nil)
-							removeInputs := false
+							hasOnlyDeploymentId := false
 							for _, token := range tokens {
 								if string(token.Bytes) == "deployment_id" {
-									removeInputs = true
+									hasOnlyDeploymentId = true
 									break
 								}
 							}
-							if removeInputs || len(tokens) <= 3 {
-								blockBody.RemoveAttribute("inputs")
+							
+							// If inputs only has deployment_id or is effectively empty, replace with empty object
+							if hasOnlyDeploymentId || len(tokens) <= 3 {
+								blockBody.SetAttributeRaw("inputs", hclwrite.TokensForIdentifier("{}"))
 								modified = true
+								fmt.Printf("      - Cleaned inputs attribute in module: %s\n", moduleName)
 							}
+						} else {
+							// If inputs doesn't exist, add it as empty object
+							blockBody.SetAttributeRaw("inputs", hclwrite.TokensForIdentifier("{}"))
+							modified = true
+							fmt.Printf("      - Added empty inputs attribute to module: %s\n", moduleName)
 						}
 						
 						fmt.Printf("    - Cleaning module: %s\n", moduleName)
@@ -917,11 +1265,27 @@ func cleanupTerraformFiles(dir string) error {
 			modified = true
 			
 		case "outputs.tf":
-			// Remove outputs that reference cc_metadata or deployment_id
+			// Check if this is in the environment module
+			isEnvironmentModule := strings.Contains(path, "/environment/")
+			
+			// Handle outputs that reference cc_metadata or deployment_id
 			outputsToRemove := []string{}
 			for _, block := range rootBody.Blocks() {
 				if block.Type() == "output" && len(block.Labels()) > 0 {
 					outputName := block.Labels()[0]
+					
+					// Special handling for cloud_tags in environment module
+					if isEnvironmentModule && outputName == "cloud_tags" {
+						fmt.Printf("    - Processing cloud_tags output in environment module\n")
+						
+						// Use the helper function to clean cc_metadata from cloud_tags
+						if cleanCloudTagsOutput(block) {
+							modified = true
+							fmt.Printf("      - Cleaned cc_metadata references from cloud_tags output\n")
+						}
+						continue
+					}
+					
 					valueAttr := block.Body().GetAttribute("value")
 					if valueAttr != nil {
 						// Check if value contains references to removed variables
@@ -943,7 +1307,7 @@ func cleanupTerraformFiles(dir string) error {
 					}
 				}
 			}
-			// Remove outputs that reference cc_metadata
+			// Remove outputs that reference cc_metadata (except cloud_tags in environment module)
 			for _, outputName := range outputsToRemove {
 				for _, block := range rootBody.Blocks() {
 					if block.Type() == "output" && len(block.Labels()) > 0 && block.Labels()[0] == outputName {
@@ -961,7 +1325,17 @@ func cleanupTerraformFiles(dir string) error {
 		for _, block := range rootBody.Blocks() {
 			blockBody := block.Body()
 			
-			// Remove cc_metadata attribute
+			// Special handling for locals block in environment module
+			if block.Type() == "locals" && strings.Contains(path, "/environment/") {
+				// Check for cloud_tags attribute in locals
+				if cloudTagsAttr := blockBody.GetAttribute("cloud_tags"); cloudTagsAttr != nil {
+					// We need to keep cloud_tags but remove cc_metadata from its definition
+					// This is complex with HCL parsing, so we'll just log it for now
+					fmt.Printf("    - Found cloud_tags in locals, keeping it but cc_metadata references should be cleaned\n")
+				}
+			}
+			
+			// Remove cc_metadata attribute from blocks (but not from inside cloud_tags)
 			if blockBody.GetAttribute("cc_metadata") != nil {
 				blockBody.RemoveAttribute("cc_metadata")
 				modified = true
@@ -1065,7 +1439,40 @@ func CleanExportedFiles(rootDir string) error {
 		}
 	}
 	
-	// 4. Clean up terraform files in tfexport and modules directories
+	// 4. Remove all _variables.tf files from modules directory
+	fmt.Println("\n🧹 Removing _variables.tf files from modules...")
+	if _, err := os.Stat(modulesDir); err == nil {
+		err := filepath.Walk(modulesDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() && filepath.Base(path) == "_variables.tf" {
+				fmt.Printf("  🗑️  Removing: %s\n", path)
+				if err := os.Remove(path); err != nil {
+					return fmt.Errorf("failed to remove %s: %w", path, err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("error removing _variables.tf files: %w", err)
+		}
+	}
+	
+	// 5. Check and fix variables.tf files in all modules
+	fmt.Println("\n🔧 Checking and fixing variables.tf files...")
+	if err := fixModuleVariables(modulesDir); err != nil {
+		fmt.Printf("  ⚠️  Error fixing module variables: %v\n", err)
+	}
+	
+	// 6. Fix level2 main.tf module declarations
+	fmt.Println("\n🔧 Fixing level2 main.tf module declarations...")
+	level2MainPath := filepath.Join(rootDir, "tfexport", "level2", "main.tf")
+	if err := fixLevel2MainTf(level2MainPath); err != nil {
+		fmt.Printf("  ⚠️  Error fixing level2 main.tf: %v\n", err)
+	}
+	
+	// 7. Clean up terraform files in tfexport and modules directories
 	// Clean tfexport directory
 	tfexportDir := filepath.Join(rootDir, "tfexport")
 	if _, err := os.Stat(tfexportDir); err == nil {
@@ -1082,7 +1489,7 @@ func CleanExportedFiles(rootDir string) error {
 		}
 	}
 
-	// 5. Clean scratch_string resources from downloaded-terraform.tfstate
+	// 8. Clean scratch_string resources from downloaded-terraform.tfstate
 	tfstatePath := filepath.Join(rootDir, "tfexport", "downloaded-terraform.tfstate")
 	if _, err := os.Stat(tfstatePath); err == nil {
 		
@@ -1186,7 +1593,7 @@ func CleanExportedFiles(rootDir string) error {
 		}
 	}
 
-	// 5. Process input_*.tf.json files in tfexport/level2 to remove flavor, version, and kind
+	// 9. Process input_*.tf.json files in tfexport/level2 to remove flavor, version, and kind
 	level2Dir := filepath.Join(rootDir, "tfexport", "level2")
 	if _, err := os.Stat(level2Dir); err == nil {
 		entries, err := os.ReadDir(level2Dir)
