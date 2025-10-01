@@ -1033,6 +1033,46 @@ func cleanCloudTagsOutput(block *hclwrite.Block) bool {
 	return true
 }
 
+// Helper function to clean FACETS_ variables from blueprint_self variables output
+func cleanBlueprintSelfVariablesOutput(block *hclwrite.Block) bool {
+	valueAttr := block.Body().GetAttribute("value")
+	if valueAttr == nil {
+		return false
+	}
+	
+	// Get the raw tokens to check for FACETS_ variables
+	tokens := valueAttr.Expr().BuildTokens(nil)
+	
+	// Check if it contains FACETS_ variables
+	hasFacetsVars := false
+	for _, token := range tokens {
+		if strings.Contains(string(token.Bytes), "FACETS_") {
+			hasFacetsVars = true
+			break
+		}
+	}
+	
+	if !hasFacetsVars {
+		return false
+	}
+	
+	// Remove the old attribute and set the new one
+	block.Body().RemoveAttribute("value")
+	
+	// Build the tokens for the new expression
+	cleanedTokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("var")},
+		{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("cluster")},
+		{Type: hclsyntax.TokenDot, Bytes: []byte(".")},
+		{Type: hclsyntax.TokenIdent, Bytes: []byte("commonEnvironmentVariables")},
+	}
+	
+	block.Body().SetAttributeRaw("value", cleanedTokens)
+	
+	return true
+}
+
 func cleanupTerraformFiles(dir string) error {
 	// Walk through all subdirectories looking for .tf files
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -1267,6 +1307,8 @@ func cleanupTerraformFiles(dir string) error {
 		case "outputs.tf":
 			// Check if this is in the environment module
 			isEnvironmentModule := strings.Contains(path, "/environment/")
+			// Check if this is in the blueprint_self module
+			isBlueprintSelfModule := strings.Contains(path, "/blueprint_self/")
 			
 			// Handle outputs that reference cc_metadata or deployment_id
 			outputsToRemove := []string{}
@@ -1282,6 +1324,18 @@ func cleanupTerraformFiles(dir string) error {
 						if cleanCloudTagsOutput(block) {
 							modified = true
 							fmt.Printf("      - Cleaned cc_metadata references from cloud_tags output\n")
+						}
+						continue
+					}
+					
+					// Special handling for variables output in blueprint_self module
+					if isBlueprintSelfModule && outputName == "variables" {
+						fmt.Printf("    - Processing variables output in blueprint_self module\n")
+						
+						// Use the helper function to clean FACETS_ variables
+						if cleanBlueprintSelfVariablesOutput(block) {
+							modified = true
+							fmt.Printf("      - Cleaned FACETS_ variables from blueprint_self variables output\n")
 						}
 						continue
 					}
