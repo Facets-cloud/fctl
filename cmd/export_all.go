@@ -565,20 +565,11 @@ func relocateDeploymentContexts(projectDir string, environments []EnvironmentExp
 			fmt.Printf("  ⚠️  Failed to update level2/main.tf for %s: %v\n", env.EnvironmentName, err)
 		}
 		
-		// Copy deploymentcontext.json to level2 directory
-		deploymentPath := filepath.Join(envDir, "deploymentcontext.json")
-		level2DeploymentPath := filepath.Join(envDir, "level2", "deploymentcontext.json")
-		if _, err := os.Stat(deploymentPath); err == nil {
-			if err := copyFile(deploymentPath, level2DeploymentPath); err != nil {
-				fmt.Printf("  ⚠️  Failed to copy deploymentcontext.json to level2 for %s: %v\n", env.EnvironmentName, err)
-			}
-		}
-		
-		// Update references in level2/locals.tf
+		// Update references in level2/locals.tf to point to root deploymentcontext.json
 		level2LocalsTfPath := filepath.Join(envDir, "level2", "locals.tf")
-		// Update to ./deploymentcontext.json since we're copying it to level2
+		// Update to ../deploymentcontext.json since deploymentcontext.json stays in root
 		if err := updateDeploymentContextRef(level2LocalsTfPath, "../deploymentcontext.json", "./deploymentcontext.json"); err != nil {
-			// Also try updating from ../../deploymentcontext.json in case it was pointing to root
+			// Also try updating from ../../deploymentcontext.json in case it was pointing to project root
 			if err := updateDeploymentContextRef(level2LocalsTfPath, "../../deploymentcontext.json", "./deploymentcontext.json"); err != nil {
 				// Don't print warning if file doesn't exist
 				if !os.IsNotExist(err) {
