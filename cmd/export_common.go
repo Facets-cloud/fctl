@@ -348,8 +348,8 @@ func ProcessExportedEnvironment(
 	}
 	
 	// 2. Create environment directory with environment name
-	// OutputDir already contains the project name, so add environment name
-	envDir := filepath.Join(opts.OutputDir, opts.EnvironmentName)
+	// OutputDir already contains the project name, so add environments folder and environment name
+	envDir := filepath.Join(opts.OutputDir, "environments", opts.EnvironmentName)
 	if err := os.MkdirAll(envDir, 0755); err != nil {
 		return fmt.Errorf("could not create environment directory: %w", err)
 	}

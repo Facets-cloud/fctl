@@ -487,7 +487,7 @@ func showFinalSummary(project string, projectDir string, environments []Environm
 // restructureTfExport moves all contents from tfexport directory to environment root
 func restructureTfExport(projectDir string, environments []EnvironmentExportStatus) error {
 	for _, env := range environments {
-		envDir := filepath.Join(projectDir, env.EnvironmentName)
+		envDir := filepath.Join(projectDir, "environments", env.EnvironmentName)
 		tfExportDir := filepath.Join(envDir, "tfexport")
 		
 		// Check if tfexport directory exists
@@ -550,7 +550,7 @@ func restructureTfExport(projectDir string, environments []EnvironmentExportStat
 // relocateDeploymentContexts updates deployment context references
 func relocateDeploymentContexts(projectDir string, environments []EnvironmentExportStatus) error {
 	for _, env := range environments {
-		envDir := filepath.Join(projectDir, env.EnvironmentName)
+		envDir := filepath.Join(projectDir, "environments", env.EnvironmentName)
 		
 		// Since tfexport is removed, files are now at environment root
 		// Update references in main.tf (now at root)
@@ -622,7 +622,7 @@ func consolidateModules(projectDir string, environments []EnvironmentExportStatu
 		}
 		
 		// Look for modules in the extracted location
-		modulesDir := filepath.Join(projectDir, env.EnvironmentName, "modules")
+		modulesDir := filepath.Join(projectDir, "environments", env.EnvironmentName, "modules")
 		
 		// Check if modules directory exists
 		if _, err := os.Stat(modulesDir); os.IsNotExist(err) {
@@ -726,8 +726,8 @@ func updateModuleReferences(projectDir string, environments []EnvironmentExportS
 			continue
 		}
 		
-		// Update level2/main.tf (now at env_dir/level2 since tfexport is removed)
-		level2MainTf := filepath.Join(projectDir, env.EnvironmentName, "level2", "main.tf")
+		// Update level2/main.tf (now at environments/env_dir/level2 since tfexport is removed)
+		level2MainTf := filepath.Join(projectDir, "environments", env.EnvironmentName, "level2", "main.tf")
 		
 		if err := updateModuleSourcePaths(level2MainTf); err != nil {
 			fmt.Printf("  ⚠️  Failed to update module references for %s: %v\n", env.EnvironmentName, err)
@@ -748,11 +748,11 @@ func updateModuleSourcePaths(tfFile string) error {
 	}
 	
 	// Simple string replacement for module source paths
-	// Since we removed tfexport, level2 is now one level higher
-	// Update from "../../modules/" to "../../modules/" (no change needed)
+	// Since environments are now inside environments/ folder, need to go one level deeper
+	// Update from "../../modules/" to "../../../modules/"
 	newContent := strings.ReplaceAll(string(content), 
 		`"../../modules/`,
-		`"../../modules/`)
+		`"../../../modules/`)
 	
 	if string(content) != newContent {
 		return os.WriteFile(tfFile, []byte(newContent), 0644)
@@ -801,7 +801,7 @@ func initializeTerraformState(projectDir string, environments []EnvironmentExpor
 	ctx := context.Background()
 	
 	for _, env := range environments {
-		envDir := filepath.Join(projectDir, env.EnvironmentName)
+		envDir := filepath.Join(projectDir, "environments", env.EnvironmentName)
 		stateFile := filepath.Join(envDir, "downloaded-terraform.tfstate")
 		
 		// Check if state file exists
