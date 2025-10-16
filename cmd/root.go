@@ -39,6 +39,11 @@ func Execute() {
 	}
 }
 
+// GetRootCommand returns the root command for embedding in other CLIs
+func GetRootCommand() *cobra.Command {
+	return rootCmd
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringP("profile", "p", "", "The profile to use from your credentials file")
 	rootCmd.PersistentFlags().BoolVar(&AllowDestroyFlag, "allow-destroy", false, "Allow resource destroy by setting prevent_destroy = false in all Terraform resources")
